@@ -1,49 +1,54 @@
 
 import torch
 
-from security.defenses import (
-    clip_update,
-    coordinate_median,
-    add_gaussian_noise,
-)
+from security.defenses import clip_update, coordinate_median
 
 
 def test_clip_update():
-    update = {
-        "weight": torch.tensor([3.0, 4.0])
-    }
+    update = [torch.tensor([3.0, 4.0])]
 
     result = clip_update(update, max_norm=2.0)
 
     expected = torch.tensor([1.2, 1.6])
 
+    assert torch.allclose(result[0], expected)
     assert torch.allclose(
-        result["weight"], expected
+        update[0], torch.tensor([3.0, 4.0])
     )
 
 
-def test_coordinate_median():
+def test_clip_without_change():
+    update = [torch.tensor([3.0, 4.0])]
+
+    result = clip_update(update, max_norm=10.0)
+
+    assert torch.allclose(result[0], update[0])
+
+
+def test_median_odd():
     updates = [
-        {"weight": torch.tensor([1.0])},
-        {"weight": torch.tensor([2.0])},
-        {"weight": torch.tensor([100.0])},
+        [torch.tensor([1.0, 8.0])],
+        [torch.tensor([3.0, 4.0])],
+        [torch.tensor([9.0, 2.0])],
     ]
 
     result = coordinate_median(updates)
 
-    assert result["weight"].item() == 2.0
-
-
-def test_gaussian_noise_zero():
-    gradients = {
-        "weight": torch.tensor([1.0, 2.0])
-    }
-
-    result = add_gaussian_noise(
-        gradients, sigma=0.0
+    assert torch.allclose(
+        result[0], torch.tensor([3.0, 4.0])
     )
 
-    assert torch.equal(
-        result["weight"],
-        gradients["weight"]
+
+def test_median_even():
+    updates = [
+        [torch.tensor([1.0, 8.0])],
+        [torch.tensor([3.0, 4.0])],
+        [torch.tensor([9.0, 2.0])],
+        [torch.tensor([11.0, 12.0])],
+    ]
+
+    result = coordinate_median(updates)
+
+    assert torch.allclose(
+        result[0], torch.tensor([6.0, 6.0])
     )

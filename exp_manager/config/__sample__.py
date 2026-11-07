@@ -1,5 +1,5 @@
 # 실험 설정 생성
-from exp_manager.dataclass import (
+from exp_manager.config import (
     ExpConfig,
     AttackConfig,
     DefenseConfig,

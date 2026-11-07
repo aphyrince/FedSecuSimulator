@@ -1,4 +1,4 @@
-from server.dataclass import (
+from server.config import (
     ServerConfig,
     DefenseConfig,
     ClientRegistry,

@@ -1,0 +1,7 @@
+﻿mode,defense,result_0,result_1,distance_to_normal_fedavg,clip_max_norm,attack_multiplier,attacker_ids
+normal,fedavg,0.428000,0.476000,0.000000,0.7,-5.0,"8,9"
+normal,clipping_fedavg,0.428000,0.476000,0.000000,0.7,-5.0,"8,9"
+normal,clipping_median,0.425000,0.475000,0.003162,0.7,-5.0,"8,9"
+attack,fedavg,-0.094000,-0.100000,0.777342,0.7,-5.0,"8,9"
+attack,clipping_fedavg,0.246987,0.276262,0.269557,0.7,-5.0,"8,9"
+attack,clipping_median,0.415000,0.470000,0.014318,0.7,-5.0,"8,9"

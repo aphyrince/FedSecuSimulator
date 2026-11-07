@@ -1,12 +1,12 @@
 # 실험 설정 생성
-from exp_manager.dataclass.client_info import ClientInfo
-from exp_manager.dataclass.exp_config import (
+from exp_manager.dataclass import (
+    ExpConfig,
     AttackConfig,
     DefenseConfig,
     EnvironmentConfig,
-    ExpConfig,
+    ClientInfo,
+    ExpResult,
 )
-from exp_manager.dataclass.exp_result import ExpResult
 
 config = ExpConfig(
     experiment_id="exp_001",

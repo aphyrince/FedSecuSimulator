@@ -1,0 +1,4 @@
+{
+  "extends": "experiment.json",
+  "runtime": {"device": "cpu", "num_workers": 0, "torch_threads": 2, "output_root": "outputs"}
+}

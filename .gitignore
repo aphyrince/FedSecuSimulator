@@ -1,0 +1,32 @@
+# Python environment and generated files
+/venv/
+/.venv/
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Downloaded CIFAR-10 and local experiment artifacts
+/data/raw/
+/outputs/
+/data/splits/
+
+# Model/checkpoint binaries (including files outside the default output folder)
+*.pt
+*.pth
+*.ckpt
+
+# Machine-specific configuration; keep shared example configurations
+/configs/local.json
+/configs/*.local.json
+
+# Editor and local settings
+/.idea/
+/.vscode/
+.env
+.env.*
+!.env.example
+!.env.*.example

@@ -1,0 +1,29 @@
+{
+  "experiment_id": "cifar10_001",
+  "seed": 42,
+  "num_clients": 10,
+  "num_rounds": 20,
+  "participation_rate": 1.0,
+  "participation_schedule": {},
+  "initial_checkpoint": null,
+  "model": {"name": "small_cnn", "channels": [32, 64], "hidden_size": 128},
+  "training": {
+    "local_epochs": 2, "batch_size": 32, "learning_rate": 0.001,
+    "optimizer": "sgd", "momentum": 0.0, "weight_decay": 0.0
+  },
+  "data": {
+    "root": "data/raw", "partition_file": null, "validation_size": 0,
+    "normalization_mean": [0.5, 0.5, 0.5], "normalization_std": [0.5, 0.5, 0.5],
+    "max_train_samples_per_client": null
+  },
+  "evaluation": {"split": "test", "batch_size": 256, "max_samples": null},
+  "attack": {
+    "enabled": true, "type": "insider_collusion", "malicious_clients": [2, 7],
+    "scale": -5.0, "min_colluders": 2, "missing_peer_policy": "skip_attack"
+  },
+  "defense": {"enabled": false, "type": "none", "parameters": {}},
+  "runtime": {
+    "device": "cpu", "num_workers": 0, "torch_threads": 2,
+    "output_root": "outputs", "deterministic": true
+  }
+}

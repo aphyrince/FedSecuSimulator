@@ -1,0 +1,8 @@
+{
+  "extends": "experiment.json",
+  "experiment_id": "development_only",
+  "num_rounds": 1,
+  "training": {"local_epochs": 1},
+  "data": {"validation_size": 10000, "max_train_samples_per_client": 20},
+  "evaluation": {"split": "validation", "max_samples": 100}
+}

@@ -28,6 +28,7 @@ def create_app(host: str, port: int):
     app.extensions["round_updates"] = {}
     app.extensions["update_submission_status"] = {}
     app.extensions["global_model"] = None
+    app.extensions["global_model_history"] = []
 
     app.register_blueprint(api_bp)
     return app

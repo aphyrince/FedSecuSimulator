@@ -192,3 +192,38 @@ API 조회:
 - `POST /api/rounds/<round_id>/timeout`: 기한 초과 처리 및 미제출 클라이언트 알림
 
 라운드 설정의 `round_timeout` 또는 `update_timeout`(초)로 제출 기한을 설정할 수 있습니다.
+
+## FedAvg 전역 모델 갱신
+
+시나리오 14의 FedAvg 집계는 [server/services/fedavg.py](server/services/fedavg.py)의
+`aggregate_fedavg()`가 담당합니다.
+
+```python
+def aggregate_fedavg(
+    global_model: dict,
+    client_updates: list[dict],
+) -> dict:
+    ...
+```
+
+각 클라이언트 업데이트에는 다음 정보가 필요합니다.
+
+```python
+{
+    "client_id": 0,
+    "num_samples": 100,
+    "valid": True,
+    "local_model": {"model_version": 1, "weights": {}},
+}
+```
+
+기본 구현은 `num_samples`를 표본 가중치로 사용해 JSON `weights`의 숫자 값을 평균합니다. PyTorch 모델로 교체할 때:
+
+1. 이 함수 안에서 Tensor 로딩과 가중 평균을 구현합니다.
+2. 반환값의 `global_model`, `total_samples`, `client_weights` 키는 유지합니다.
+3. Tensor를 API로 전달할 때는 JSON 직렬화 함수로 변환하고 다음 라운드에서 복원합니다.
+
+갱신 API와 조회 API는 다음과 같습니다.
+
+- `GET /api/model/global`: 현재 FedAvg 전역 모델
+- `GET /api/model/history`: 라운드별 갱신된 전역 모델과 표본 가중치

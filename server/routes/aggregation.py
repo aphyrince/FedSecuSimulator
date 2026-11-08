@@ -2,10 +2,13 @@ from datetime import datetime, timedelta, timezone
 import json
 import random
 import threading
+from copy import deepcopy
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from flask import Blueprint, current_app, jsonify, request
+
+from services.fedavg import aggregate_fedavg
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
@@ -151,56 +154,7 @@ def aggregate_round(round_id: int):
 def execute_round(round_id: int):
     """수신한 클라이언트 업데이트를 유효성 검사하고 단일 라운드를 집계한다."""
     payload = request.get_json(silent=True) or {}
-    updates = [update for update in payload.get("updates", []) if update.get("valid", True)]
-    if not updates:
-        return jsonify(error="At least one valid update is required"), 400
-
-    values = [update["update"]["model_delta"] for update in updates]
-    if payload.get("defense") == "coordinate_median":
-        values.sort()
-        aggregated_delta = values[len(values) // 2]
-    else:
-        aggregated_delta = sum(values) / len(values)
-
-    attack = payload.get("attack_enabled", False)
-    accuracy = max(0.05, min(0.99, 0.50 + round_id * 0.025 + aggregated_delta * 0.1))
-    if attack:
-        accuracy -= 0.08
-    if payload.get("defense") == "norm_clipping":
-        accuracy -= 0.01
-    elif payload.get("defense") == "coordinate_median" and attack:
-        accuracy += 0.04
-
-    selected_ids = payload.get("selected_clients", [])
-    accepted_ids = [update["client_id"] for update in updates]
-    malicious_ids = payload.get("malicious_clients", [])
-    result = {
-        "experiment_id": payload.get("experiment_id", "unknown"),
-        "round": round_id,
-        "model_version": round_id,
-        "selected_clients": payload.get("selected_clients", []),
-        "accepted_clients": accepted_ids,
-        "delayed_clients": payload.get("delay_clients", []),
-        "malicious_clients": payload.get("malicious_clients", []),
-        "malicious_selected": [
-            client_id for client_id in selected_ids if client_id in malicious_ids
-        ],
-        "malicious_accepted": [
-            client_id for client_id in accepted_ids if client_id in malicious_ids
-        ],
-        "available_clients": current_app.extensions.get("available_clients", {}).get(
-            round_id, []
-        ),
-        "attack_enabled": attack,
-        "defense": payload.get("defense", "none"),
-        "accuracy": round(accuracy, 4),
-        "loss": round(max(0.05, 1.0 - accuracy), 4),
-        "aggregated_delta": round(aggregated_delta, 4),
-        "reason": "model_updated",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    current_app.extensions["round_results"].append(result)
-    return jsonify(result)
+    return execute_result(round_id, payload)
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/start")
@@ -361,7 +315,18 @@ def execute_result(round_id: int, payload: dict):
     if not updates:
         return jsonify(error="At least one valid update is required"), 400
 
-    values = [update["update"]["model_delta"] for update in updates]
+    delta_values = [
+        update["update"]["model_delta"]
+        for update in updates
+        if isinstance(update["update"].get("model_delta"), (int, float))
+    ]
+    if delta_values:
+        values = delta_values
+    else:
+        values = [
+            update["update"].get("update_norm", 0.0)
+            for update in updates
+        ]
     if payload.get("defense") == "coordinate_median":
         values.sort()
         aggregated_delta = values[len(values) // 2]
@@ -380,6 +345,25 @@ def execute_result(round_id: int, payload: dict):
     selected_ids = payload.get("selected_clients", [])
     accepted_ids = [update["client_id"] for update in updates]
     malicious_ids = payload.get("malicious_clients", [])
+    try:
+        fedavg_result = aggregate_fedavg(
+            current_app.extensions.get("global_model", {}),
+            updates,
+        )
+        current_app.extensions["global_model"] = fedavg_result["global_model"]
+        current_app.extensions.setdefault("global_model_history", []).append({
+            "round": round_id,
+            "model": deepcopy(fedavg_result["global_model"]),
+            "total_samples": fedavg_result["total_samples"],
+            "client_weights": fedavg_result["client_weights"],
+        })
+    except ValueError as exc:
+        current_app.logger.warning("FedAvg update skipped: %s", exc)
+        fedavg_result = {
+            "total_samples": 0,
+            "client_weights": {},
+        }
+
     result = {
         "experiment_id": payload.get("experiment_id", "unknown"),
         "round": round_id,
@@ -402,6 +386,11 @@ def execute_result(round_id: int, payload: dict):
         "accuracy": round(accuracy, 4),
         "loss": round(max(0.05, 1.0 - accuracy), 4),
         "aggregated_delta": round(aggregated_delta, 4),
+        "global_model_version": current_app.extensions["global_model"].get(
+            "model_version", round_id
+        ),
+        "fedavg_samples": fedavg_result["total_samples"],
+        "fedavg_client_weights": fedavg_result["client_weights"],
         "reason": "model_updated",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

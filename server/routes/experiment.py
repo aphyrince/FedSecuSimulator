@@ -37,3 +37,10 @@ def get_round_config():
 @experiment_bp.get("/api/model/global")
 def get_global_model():
     return jsonify(current_app.extensions.get("global_model", {}))
+
+
+@experiment_bp.get("/api/model/history")
+def get_global_model_history():
+    """라운드별 FedAvg 전역 모델 갱신 기록을 반환한다."""
+    history = current_app.extensions.get("global_model_history", [])
+    return jsonify(count=len(history), history=history)

@@ -1,0 +1,47 @@
+[
+  {
+    "image_id": "cifar10-train-25",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 200,
+    "noise_std": 0.0,
+    "clean_gradient_l2": 30.64426963,
+    "added_noise_l2": 0.0,
+    "noise_to_gradient_ratio": 0.0,
+    "gradient_match_loss_before": 881.46075439,
+    "gradient_match_loss_after": 0.28132197,
+    "mse_for_evaluation_only": 0.00225715,
+    "true_label_for_evaluation_only": 6,
+    "predicted_label": 6
+  },
+  {
+    "image_id": "cifar10-train-25",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 200,
+    "noise_std": 0.01,
+    "clean_gradient_l2": 30.64426963,
+    "added_noise_l2": 1.75095779,
+    "noise_to_gradient_ratio": 0.05713818,
+    "gradient_match_loss_before": 885.51831055,
+    "gradient_match_loss_after": 3.04603696,
+    "mse_for_evaluation_only": 0.0023009,
+    "true_label_for_evaluation_only": 6,
+    "predicted_label": 6
+  },
+  {
+    "image_id": "cifar10-train-25",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 200,
+    "noise_std": 0.1,
+    "clean_gradient_l2": 30.64426963,
+    "added_noise_l2": 17.50957856,
+    "noise_to_gradient_ratio": 0.57138182,
+    "gradient_match_loss_before": 1197.96313477,
+    "gradient_match_loss_after": 276.58944702,
+    "mse_for_evaluation_only": 0.01141375,
+    "true_label_for_evaluation_only": 6,
+    "predicted_label": 6
+  }
+]

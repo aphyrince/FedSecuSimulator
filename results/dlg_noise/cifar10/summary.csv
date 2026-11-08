@@ -1,0 +1,4 @@
+﻿image_id,model,seed,steps,noise_std,clean_gradient_l2,added_noise_l2,noise_to_gradient_ratio,gradient_match_loss_before,gradient_match_loss_after,mse_for_evaluation_only,true_label_for_evaluation_only,predicted_label
+cifar10-train-25,TinyDLGNet-linear,42,200,0.0,30.64426963,0.0,0.0,881.46075439,0.28132197,0.00225715,6,6
+cifar10-train-25,TinyDLGNet-linear,42,200,0.01,30.64426963,1.75095779,0.05713818,885.51831055,3.04603696,0.0023009,6,6
+cifar10-train-25,TinyDLGNet-linear,42,200,0.1,30.64426963,17.50957856,0.57138182,1197.96313477,276.58944702,0.01141375,6,6

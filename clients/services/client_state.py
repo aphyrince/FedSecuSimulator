@@ -17,6 +17,24 @@ class ClientState:
         self.extracted_updates: dict[int, dict[str, Any]] = {}
         self.submitted_updates: dict[int, dict[str, Any]] = {}
         self.expired_rounds: set[int] = set()
+        self.malicious_peers: dict[int, list[dict[str, Any]]] = {}
+        self.received_malicious_updates: dict[int, dict[int, dict[str, Any]]] = {}
+        self.dlg_gradient: dict[str, Any] = {}
+        self.dlg_round = 0
+
+    def set_malicious_peers(
+        self, round_id: int, peers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """해당 라운드의 다른 악성 클라이언트 주소를 저장한다."""
+        self.malicious_peers[round_id] = peers
+        return peers
+
+    def receive_malicious_update(
+        self, round_id: int, sender_id: int, update: dict[str, Any]
+    ) -> dict[str, Any]:
+        """다른 악성 클라이언트로부터 받은 업데이트 추출값을 저장한다."""
+        self.received_malicious_updates.setdefault(round_id, {})[sender_id] = update
+        return update
 
     def set_experiment_config(self, config: dict[str, Any]) -> dict[str, Any]:
         self.experiment_config = config

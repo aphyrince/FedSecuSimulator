@@ -2,6 +2,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from services.training_service import build_round_update, run_local_training
 from services.server_client import post_json
+from services.dlg_service import add_gaussian_noise, compute_single_image_gradient
 
 experiment_bp = Blueprint("client_experiment", __name__)
 
@@ -73,6 +74,8 @@ def submit_round_update():
         client_id=current_app.config["CLIENT_ID"],
         request_payload=payload,
     )
+    if isinstance(payload.get("colluded_update"), dict):
+        update = payload["colluded_update"]
     server_url = payload.get("server_url", current_app.config["SERVER_URL"])
     response = post_json(
         f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
@@ -84,6 +87,119 @@ def submit_round_update():
         client_id=current_app.config["CLIENT_ID"],
         round=round_id,
         server_response=response,
+    )
+
+
+@experiment_bp.post("/api/round/collusion")
+def collude_round_updates():
+    """악성 클라이언트끼리 업데이트를 평균한 뒤 공격 배율을 적용한다."""
+    payload = request.get_json(silent=True) or {}
+    round_id = int(payload.get("round", 1))
+    peer_updates = payload.get("peer_updates", [])
+    own_update = payload.get("own_update", {})
+    state = current_app.extensions["client_state"]
+    if not peer_updates:
+        peer_updates = list(
+            state.received_malicious_updates.get(round_id, {}).values()
+        )
+
+    values = []
+    for update in [own_update, *peer_updates]:
+        value = update.get("update", {}).get("model_delta")
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    if not values:
+        return jsonify(error="No numeric malicious updates"), 400
+
+    scale = float(payload.get("attack_scale", -5.0))
+    colluded_value = (sum(values) / len(values)) * scale
+    colluded_update = {
+        **own_update,
+        "round": round_id,
+        "malicious": True,
+        "valid": True,
+        "update": {
+            **own_update.get("update", {}),
+            "model_delta": colluded_value,
+            "scale": scale,
+            "collusion_mean": sum(values) / len(values),
+            "collusion_peer_count": len(peer_updates),
+        },
+    }
+    return jsonify(colluded_update)
+
+
+@experiment_bp.post("/api/round/malicious-peers")
+def receive_malicious_peers():
+    """실험 관리자가 전달한 다른 악성 클라이언트 정보를 저장한다."""
+    payload = request.get_json(silent=True) or {}
+    round_id = int(payload.get("round", 1))
+    peers = payload.get("peers", [])
+    if not isinstance(peers, list):
+        return jsonify(error="peers must be a list"), 400
+    state = current_app.extensions["client_state"]
+    state.set_malicious_peers(round_id, peers)
+    return jsonify(
+        status="received",
+        client_id=current_app.config["CLIENT_ID"],
+        round=round_id,
+        peers=peers,
+    )
+
+
+@experiment_bp.post("/api/dlg/start")
+def start_dlg():
+    """원본 이미지와 체크포인트로 단일 이미지 그래디언트를 계산한다."""
+    payload = request.get_json(silent=True) or {}
+    round_id = int(payload.get("round", 1))
+    image = payload.get("image", [])
+    label = int(payload.get("label", 0))
+    model = payload.get("global_model", {})
+    sigma = float(payload.get("noise_sigma", 0.0))
+    gradient = compute_single_image_gradient(model, image, label)
+    gradient = add_gaussian_noise(
+        gradient,
+        sigma=sigma,
+        seed=int(payload.get("seed", 42)) + round_id + current_app.config["CLIENT_ID"],
+    )
+    state = current_app.extensions["client_state"]
+    state.dlg_gradient = gradient
+    state.dlg_round = round_id
+    server_url = payload.get("server_url", current_app.config["SERVER_URL"])
+    response = post_json(
+        f"{server_url.rstrip('/')}/api/dlg/gradient",
+        {
+            "round": round_id,
+            "client_id": current_app.config["CLIENT_ID"],
+            "model_version": payload.get("model_version", 0),
+            "noise_sigma": sigma,
+            "label": label,
+            "image_shape": payload.get("image_shape", [len(image)]),
+            "gradient": gradient,
+        },
+    )
+    return jsonify(status="submitted", gradient=gradient, server_response=response)
+
+
+@experiment_bp.post("/api/round/update-share")
+def receive_shared_malicious_update():
+    """다른 악성 클라이언트의 추출값을 API로 수신해 저장한다."""
+    payload = request.get_json(silent=True) or {}
+    round_id = int(payload.get("round", 1))
+    sender_id = payload.get("sender_id")
+    update = payload.get("update")
+    if sender_id is None or not isinstance(update, dict):
+        return jsonify(error="sender_id and update are required"), 400
+    current_app.extensions["client_state"].receive_malicious_update(
+        round_id=round_id,
+        sender_id=int(sender_id),
+        update=update,
+    )
+    return jsonify(
+        status="received",
+        client_id=current_app.config["CLIENT_ID"],
+        sender_id=int(sender_id),
+        round=round_id,
     )
 
 

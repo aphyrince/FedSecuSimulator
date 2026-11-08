@@ -72,3 +72,21 @@ def receive_round_result():
         round=round_id,
         recorded_file=str(round_path),
     )
+
+
+@experiment_bp.post("/api/dlg/results")
+def receive_dlg_result():
+    """서버 복원 결과와 원본 이미지로 DLG MSE를 계산해 기록한다."""
+    result = request.get_json(silent=True) or {}
+    round_id = int(result.get("round", 0))
+    manager = current_app.extensions["experiment_manager"]
+    original = manager.get_dlg_original(round_id)
+    restored = result.get("reconstructed_image", [])
+    mse = sum(
+        (float(original[index]) - float(restored[index])) ** 2
+        for index in range(min(len(original), len(restored)))
+    ) / max(1, len(restored))
+    result["original_image"] = original
+    result["mse"] = round(mse, 8)
+    manager.record_dlg_result(round_id, result)
+    return jsonify(status="received", round=round_id, mse=result["mse"])

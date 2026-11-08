@@ -79,3 +79,51 @@ def aggregate_fedavg(
         "total_samples": int(total_samples),
         "client_weights": client_weight_map,
     }
+
+
+def aggregate_coordinate_median(
+    global_model: dict[str, Any],
+    client_updates: list[dict[str, Any]],
+) -> FedAvgResult:
+    """숫자 가중치 벨 모델의 좌표별 중앙값을 계산한다."""
+    valid_updates = [
+        update for update in client_updates
+        if update.get("valid", False)
+        and update.get("local_model", {}).get("weights") is not None
+    ]
+    if not valid_updates:
+        raise ValueError("No valid local models are available for median aggregation")
+
+    def median(values: list[Any]) -> Any:
+        if isinstance(values[0], dict):
+            keys = sorted(set().union(*(item.keys() for item in values)))
+            return {
+                key: median([item.get(key, 0) for item in values])
+                for key in keys
+            }
+        if isinstance(values[0], list):
+            length = max(len(item) for item in values)
+            return [
+                median([item[index] if index < len(item) else 0 for item in values])
+                for index in range(length)
+            ]
+        ordered = sorted(float(value) for value in values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+    updated_model = deepcopy(global_model)
+    updated_model["weights"] = median(
+        [update["local_model"]["weights"] for update in valid_updates]
+    )
+    updated_model["model_version"] = int(global_model.get("model_version", 0)) + 1
+    total_samples = sum(int(update.get("num_samples", 0)) for update in valid_updates)
+    return {
+        "global_model": updated_model,
+        "total_samples": total_samples,
+        "client_weights": {
+            str(update["client_id"]): 1.0 / len(valid_updates)
+            for update in valid_updates
+        },
+    }

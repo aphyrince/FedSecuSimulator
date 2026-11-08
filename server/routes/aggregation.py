@@ -8,8 +8,9 @@ from urllib.request import Request, urlopen
 
 from flask import Blueprint, current_app, jsonify, request
 
-from services.fedavg import aggregate_fedavg
+from services.fedavg import aggregate_coordinate_median, aggregate_fedavg
 from services.model_evaluation import evaluate_global_model
+from services.byzantine_defense import apply_norm_clipping, coordinate_median
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
@@ -276,24 +277,104 @@ def start_round(round_id: int):
     malicious_ids = set(config.get("malicious_clients", []))
 
     updates = []
+    malicious_local_updates = {}
+    attack_enabled = bool(config.get("attack_enabled", False))
+
     for client in accepted_clients:
         try:
-            updates.append(
-                _post_json(
-                    f"{client['url']}/api/round/submit",
-                    {
-                        "round": round_id,
-                        "malicious": client["client_id"] in malicious_ids,
-                        "attack_enabled": config.get("attack_enabled", False),
-                        "server_url": config.get(
-                            "server_url",
-                            f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-                        ),
-                    },
-                )
+            is_malicious = attack_enabled and client["client_id"] in malicious_ids
+            local_response = _post_json(
+                f"{client['url']}/api/round/execute",
+                {
+                    "round": round_id,
+                    "malicious": is_malicious,
+                    "attack_enabled": attack_enabled,
+                },
+            )
+            if is_malicious:
+                malicious_local_updates[client["client_id"]] = local_response
+                continue
+            _post_json(
+                f"{client['url']}/api/round/submit",
+                {
+                    "round": round_id,
+                    "malicious": False,
+                    "attack_enabled": attack_enabled,
+                    "server_url": config.get(
+                        "server_url",
+                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+                    ),
+                },
             )
         except (OSError, ValueError):
-            current_app.logger.warning("Client update failed: client_id=%s", client["client_id"])
+            current_app.logger.warning(
+                "Client update generation failed: client_id=%s",
+                client["client_id"],
+            )
+
+    # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
+    if attack_enabled:
+        for client in accepted_clients:
+            sender_id = client["client_id"]
+            if sender_id not in malicious_local_updates:
+                continue
+            for peer in accepted_clients:
+                peer_id = peer["client_id"]
+                if peer_id not in malicious_local_updates or peer_id == sender_id:
+                    continue
+                try:
+                    _post_json(
+                        f"{peer['url']}/api/round/update-share",
+                        {
+                            "round": round_id,
+                            "sender_id": sender_id,
+                            "update": malicious_local_updates[sender_id],
+                        },
+                    )
+                except (OSError, ValueError):
+                    current_app.logger.warning(
+                        "Malicious update sharing failed: sender=%s peer=%s",
+                        sender_id,
+                        peer_id,
+                    )
+
+    # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+    for client in accepted_clients:
+        client_id = client["client_id"]
+        if client_id not in malicious_local_updates:
+            continue
+        peer_updates = [
+            peer_update
+            for peer_id, peer_update in malicious_local_updates.items()
+            if peer_id != client_id
+        ]
+        try:
+            colluded_update = _post_json(
+                f"{client['url']}/api/round/collusion",
+                {
+                    "round": round_id,
+                    "own_update": malicious_local_updates[client_id],
+                    "peer_updates": peer_updates,
+                    "attack_scale": config.get("attack_scale", -5.0),
+                },
+            )
+            _post_json(
+                f"{client['url']}/api/round/submit",
+                {
+                    "round": round_id,
+                    "malicious": True,
+                    "attack_enabled": attack_enabled,
+                    "colluded_update": colluded_update,
+                    "server_url": config.get(
+                        "server_url",
+                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+                    ),
+                },
+            )
+        except (OSError, ValueError):
+            current_app.logger.warning(
+                "Malicious collusion failed: client_id=%s", client_id
+            )
 
     received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
     updates = list(received_response.values())
@@ -328,10 +409,18 @@ def execute_result(round_id: int, payload: dict):
             update["update"].get("update_norm", 0.0)
             for update in updates
         ]
-    if payload.get("defense") == "coordinate_median":
-        values.sort()
-        aggregated_delta = values[len(values) // 2]
+    defense_enabled = bool(payload.get("defense_enabled", payload.get("defense") != "none"))
+    defense_type = payload.get("defense", "none")
+    if defense_enabled and defense_type == "coordinate_median":
+        aggregated_delta = coordinate_median(updates)
     else:
+        if defense_enabled and defense_type == "norm_clipping":
+            updates = apply_norm_clipping(
+                updates, payload.get("clip_norm", 1.0)
+            )
+            values = [
+                update["update"]["model_delta"] for update in updates
+            ]
         aggregated_delta = sum(values) / len(values)
 
     attack = payload.get("attack_enabled", False)
@@ -339,10 +428,16 @@ def execute_result(round_id: int, payload: dict):
     accepted_ids = [update["client_id"] for update in updates]
     malicious_ids = payload.get("malicious_clients", [])
     try:
-        fedavg_result = aggregate_fedavg(
-            current_app.extensions.get("global_model", {}),
-            updates,
-        )
+        if defense_enabled and defense_type == "coordinate_median":
+            fedavg_result = aggregate_coordinate_median(
+                current_app.extensions.get("global_model", {}),
+                updates,
+            )
+        else:
+            fedavg_result = aggregate_fedavg(
+                current_app.extensions.get("global_model", {}),
+                updates,
+            )
         current_app.extensions["global_model"] = fedavg_result["global_model"]
         current_app.extensions.setdefault("global_model_history", []).append({
             "round": round_id,
@@ -401,7 +496,12 @@ def execute_result(round_id: int, payload: dict):
             round_id, []
         ),
         "attack_enabled": attack,
+        "attack_type": "insider_collusion" if attack else None,
         "defense": payload.get("defense", "none"),
+        "defense_enabled": defense_enabled,
+        "defense_type": defense_type if defense_enabled else None,
+        "clip_norm": payload.get("clip_norm", 1.0),
+        "attack_scale": payload.get("attack_scale", -5.0),
         "accuracy": round(accuracy, 4),
         "loss": round(loss, 4),
         "aggregated_delta": round(aggregated_delta, 4),

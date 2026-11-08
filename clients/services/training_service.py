@@ -63,8 +63,9 @@ def build_round_update(
         "num_samples": training.get("num_samples", 0) if has_round_training else 0,
         "local_model": training.get("local_model", {}) if has_round_training else {},
         "update": {
-            "model_delta": -3.5 if attacked else model_delta,
-            "scale": -5.0 if attacked else 1.0,
+            "model_delta": model_delta,
+            "scale": 1.0,
+            "attack_candidate": attacked,
             "update_norm": (
                 extracted_update.get("update_norm", 0.0)
                 if has_round_training

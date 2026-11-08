@@ -14,3 +14,7 @@ class RestClient:
         )
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def get_json(self, url: str, timeout: float = 3.0):
+        with urlopen(url, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))

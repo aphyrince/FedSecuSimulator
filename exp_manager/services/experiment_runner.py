@@ -19,6 +19,9 @@ class ExperimentManager:
         self.stop_event = threading.Event()
         self.rest_client = RestClient()
         self.processed_rounds = set()
+        self.malicious_clients_by_round = {}
+        self.dlg_images_by_round = {}
+        self.dlg_results_by_round = {}
         self.config = {
             "experiment_id": f"fedsec-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             "experiment_type": "federated",
@@ -27,7 +30,14 @@ class ExperimentManager:
             "participation_rate": 0.5,
             "malicious_clients": [0, 1],
             "attack_enabled": False,
+            "attack_scale": -5.0,
+            "round_type": "federated",
+            "dlg_noise_sigma": 0.0,
+            "dlg_iterations": 200,
+            "dlg_image": [],
+            "dlg_label": 0,
             "defense": "none",
+            "defense_enabled": False,
             "clip_norm": 1.0,
             "delay_clients": [2, 5, 8],
             "data_distribution": "iid",
@@ -37,6 +47,7 @@ class ExperimentManager:
             "status": "idle",
             "current_round": 0,
             "round_results": [],
+            "malicious_clients_by_round": {},
             "log_path": None,
             "result_path": None,
             "chart_path": None,
@@ -59,7 +70,14 @@ class ExperimentManager:
                 "participation_rate",
                 "malicious_clients",
                 "attack_enabled",
+                "attack_scale",
+                "round_type",
+                "dlg_noise_sigma",
+                "dlg_iterations",
+                "dlg_image",
+                "dlg_label",
                 "defense",
+                "defense_enabled",
                 "clip_norm",
                 "delay_clients",
                 "data_distribution",
@@ -90,6 +108,7 @@ class ExperimentManager:
         with self.lock:
             return {
                 **self.state,
+                "malicious_clients_by_round": dict(self.malicious_clients_by_round),
                 "config": dict(self.config),
                 "running": self.state["status"] == "running",
             }
@@ -138,6 +157,7 @@ class ExperimentManager:
                 chart_path=None,
                 message="실험 상태를 초기화했습니다.",
             )
+            self.malicious_clients_by_round.clear()
             self.processed_rounds.clear()
         return self.status()
 
@@ -168,6 +188,13 @@ class ExperimentManager:
             "nums_clients": self.client_count,
             "experiment_manager_url": self.process_manager.manager_url(),
         }
+        malicious_clients = self.prepare_malicious_clients(
+            round_id, round_config, config
+        )
+        round_config["malicious_clients"] = malicious_clients
+        if round_config.get("round_type") == "dlg":
+            self.execute_dlg_round(round_id, round_config)
+            return
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
             round_config,
@@ -179,10 +206,125 @@ class ExperimentManager:
         if result.get("round") == round_id:
             self.record_round_result(result)
 
+    def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
+        """DLG 체크포인트와 원본 이미지를 대상 클라이언트에 전달한다."""
+        image = round_config.get("dlg_image", [])
+        self.dlg_images_by_round[round_id] = list(image)
+        registry = self.process_manager.client_registry()
+        if not registry:
+            raise RuntimeError("DLG client is not registered")
+        client = registry[0]
+        checkpoint = self.rest_client.get_json(
+            f"{self.process_manager.server_url()}/api/model/global"
+        )
+        result = self.rest_client.post_json(
+            f"{client['url']}/api/dlg/start",
+            {
+                **round_config,
+                "global_model": checkpoint,
+                "image": image,
+                "image_shape": round_config.get("dlg_image_shape", [len(image)]),
+                "noise_sigma": round_config.get("dlg_noise_sigma", 0.0),
+                "server_url": self.process_manager.server_url(),
+                "model_version": checkpoint.get("model_version", 0),
+            },
+        )
+        return result
+
+    def get_dlg_original(self, round_id: int) -> list[float]:
+        return self.dlg_images_by_round.get(round_id, [])
+
+    def record_dlg_result(self, round_id: int, result: dict) -> Path:
+        result_path = save_round_result(self.results_dir, self.get_config(), result)
+        with self.lock:
+            self.dlg_results_by_round[round_id] = result
+        return result_path
+
+    def prepare_malicious_clients(
+        self, round_id: int, round_config: dict, experiment_config: dict
+    ) -> list[int]:
+        """공격 라운드에서 악성 클라이언트 2개를 선택하고 피어 정보를 전달한다."""
+        attack_enabled = bool(round_config.get("attack_enabled", False))
+        if not attack_enabled:
+            with self.lock:
+                self.malicious_clients_by_round[round_id] = []
+            return []
+
+        rng = random.Random(
+            int(experiment_config.get("seed", 42)) + round_id * 1009
+        )
+        selected = sorted(rng.sample(range(self.client_count), 2))
+        with self.lock:
+            self.malicious_clients_by_round[round_id] = selected
+            self.state["malicious_clients_by_round"] = dict(
+                self.malicious_clients_by_round
+            )
+
+        registry = {
+            client["client_id"]: client
+            for client in self.process_manager.client_registry()
+        }
+        for client_id in selected:
+            peers = [
+                {
+                    "client_id": peer_id,
+                    "ip": registry[peer_id]["ip"],
+                    "port": registry[peer_id]["port"],
+                    "url": registry[peer_id]["url"],
+                }
+                for peer_id in selected
+                if peer_id != client_id
+            ]
+            self.rest_client.post_json(
+                f"{registry[client_id]['url']}/api/round/malicious-peers",
+                {
+                    "round": round_id,
+                    "malicious": True,
+                    "peers": peers,
+                },
+            )
+        return selected
+
     def record_round_result(self, result: dict) -> Path:
         """라운드 결과를 상태와 JSON 파일에 기록하고 예약된 다음 라운드를 시작한다."""
         round_id = int(result["round"])
         config = self.get_config()
+        round_config = self._round_config(round_id, config)
+        malicious_clients = self.malicious_clients_by_round.get(
+            round_id, result.get("malicious_clients", [])
+        )
+        attack_enabled = bool(round_config.get("attack_enabled", False))
+        defense_enabled = bool(
+            round_config.get("defense_enabled", False)
+        )
+        result = {
+            **result,
+            "attack_enabled": bool(result.get("attack_enabled", attack_enabled)),
+            "attack_type": (
+                "insider_collusion"
+                if result.get("attack_enabled", attack_enabled)
+                else None
+            ),
+            "malicious_clients": malicious_clients,
+            "malicious_selected": malicious_clients,
+            "defense_enabled": bool(
+                result.get("defense_enabled", defense_enabled)
+            ),
+            "defense": result.get(
+                "defense", round_config.get("defense", "none")
+            ),
+            "defense_type": (
+                result.get("defense")
+                if result.get("defense_enabled", defense_enabled)
+                else None
+            ),
+            "clip_norm": result.get(
+                "clip_norm", round_config.get("clip_norm", 1.0)
+            ),
+            "attack_scale": result.get(
+                "attack_scale", round_config.get("attack_scale", -5.0)
+            ),
+        }
         round_path = save_round_result(self.results_dir, config, result)
 
         with self.lock:
@@ -234,7 +376,20 @@ class ExperimentManager:
             "participation_rate": custom.get("participation_rate", config["participation_rate"]),
             "malicious_clients": custom.get("malicious_clients", config["malicious_clients"]),
             "attack_enabled": custom.get("attack_enabled", config["attack_enabled"]),
+            "attack_scale": custom.get("attack_scale", config["attack_scale"]),
+            "round_type": custom.get("round_type", "federated"),
+            "dlg_noise_sigma": custom.get(
+                "dlg_noise_sigma", config["dlg_noise_sigma"]
+            ),
+            "dlg_iterations": custom.get(
+                "dlg_iterations", config["dlg_iterations"]
+            ),
+            "dlg_image": custom.get("dlg_image", config["dlg_image"]),
+            "dlg_label": custom.get("dlg_label", config["dlg_label"]),
             "defense": custom.get("defense", config["defense"]),
+            "defense_enabled": custom.get(
+                "defense_enabled", config["defense_enabled"]
+            ),
             "clip_norm": custom.get("clip_norm", config["clip_norm"]),
             "delay_clients": custom.get("delay_clients", config["delay_clients"]),
             "data_distribution": custom.get("data_distribution", config["data_distribution"]),
@@ -261,6 +416,10 @@ class ExperimentManager:
         )
 
         # 중앙 서버에 먼저 라운드 설정을 전달한다.
+        malicious_clients = self.prepare_malicious_clients(
+            round_id, round_config, config
+        )
+        round_config["malicious_clients"] = malicious_clients
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config", round_config
         )

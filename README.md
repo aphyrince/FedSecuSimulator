@@ -291,3 +291,58 @@ def evaluate_global_model(
 전체 실험 실행 중 다음 라운드가 예약되어 있으면 수신 API가 중앙 서버의
 `POST /api/rounds/<round_id>/start` 호출을 순차적으로 시작합니다. 마지막 라운드가
 완료되면 기존 `results.json`, `rounds.csv`, 정확도 그래프도 생성됩니다.
+
+## 내부자 협력 공격 라운드
+
+라운드 설정에서 다음 값을 사용합니다.
+
+- `attack_enabled: true`
+- `malicious_clients: [클라이언트 ID 목록]`
+- `attack_scale: -5.0`
+- 방어: `defense`를 `none`, `norm_clipping`, `coordinate_median` 중 하나로 설정
+- 노름 제한: `clip_norm`
+
+악성 클라이언트는 로컬 업데이트를 생성한 뒤 `/api/round/collusion`으로 서로의
+업데이트를 공유합니다. 공동 평균에 `attack_scale`을 곱한 변조 업데이트를 중앙 서버에
+제출합니다. 공격 교환 구현은 `clients/routes/experiment.py`의
+`collude_round_updates()`를 교체할 수 있습니다.
+
+악성 클라이언트 추출값 교환은 `POST /api/round/update-share`를 사용합니다.
+송신자는 본인의 추출 업데이트 payload를 상대 악성 클라이언트로 전달하고, 상대는
+클라이언트 상태의 라운드별 `received_malicious_updates`에 저장합니다. 이후
+`POST /api/round/collusion`은 자신의 추출값과 수신한 값의 평균에 공격 배율을 적용합니다.
+
+## DLG 공격 교체 지점
+
+DLG 라운드 설정은 `round_type=dlg`, `dlg_noise_sigma`, `dlg_iterations`,
+`dlg_image`, `dlg_image_shape`, `dlg_label`로 구성합니다.
+
+- 클라이언트 그래디언트 계산: `clients/services/dlg_service.py`
+  - `compute_single_image_gradient(global_model, image, label)`
+  - `add_gaussian_noise(gradient, sigma, seed)`
+- 서버 DLG 복원: `server/services/dlg_attack.py::reconstruct_image(...)`
+- 클라이언트 API: `POST /api/dlg/start`
+- 서버 API: `POST /api/dlg/gradient`
+- 관리자 MSE 수신: `POST /api/dlg/results`
+
+팀 권장 가우시안 노이즈 실험값은 `0`, `0.01`, `0.05`, `0.10`입니다.
+실제 PyTorch/CNN 구현으로 교체할 때도 위 함수 시그니처와 JSON
+`gradient.values`, `reconstructed_image` 반환 형식을 유지하면 REST 흐름은 그대로 사용할 수 있습니다.
+
+## 방어 알고리즘 교체
+
+라운드 설정에는 `defense_enabled`, `defense`, `clip_norm`이 전달됩니다.
+
+- `defense_enabled=false`: 방어 로직을 실행하지 않고 일반 FedAvg를 사용합니다.
+- `defense_enabled=true`, `defense=norm_clipping`: [byzantine_defense.py]의
+  `apply_norm_clipping(updates, clip_norm)`을 실행한 뒤
+  [fedavg.py]의 `aggregate_fedavg()`로 집계합니다.
+- `defense_enabled=true`, `defense=coordinate_median`: [fedavg.py]의
+  `aggregate_coordinate_median()`으로 좌표별 중앙값 집계를 수행합니다.
+
+실제 PyTorch 텐서 구현으로 교체하려면 반환 형식은 유지한 채 다음 함수만 구현하면 됩니다.
+
+- 노름 클리핑: `server/services/byzantine_defense.py::apply_norm_clipping`
+- 좌표별 중앙값 집계: `server/services/fedavg.py::aggregate_coordinate_median`
+
+클라이언트 update payload의 `update`, `local_model`, `num_samples` 형태는 그대로 유지해야 합니다.

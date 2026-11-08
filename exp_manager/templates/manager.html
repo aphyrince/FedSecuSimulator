@@ -30,6 +30,13 @@
           <option value="non_iid">Non-IID</option>
         </select>
       </label>
+      <label>라운드 유형
+        <select id="round-type">
+          <option value="federated">일반 연합학습</option>
+          <option value="dlg">DLG 공격</option>
+        </select>
+      </label>
+      <label>DLG 가우시안 노이즈 σ <input id="dlg-noise" type="number" min="0" step="0.01" value="0" /></label>
       <label
         >방어
         <select id="defense">
@@ -38,8 +45,9 @@
           <option value="coordinate_median">좌표별 중앙값</option>
         </select>
       </label>
+      <label><input id="defense-enabled" type="checkbox" /> 중앙 서버 방어 사용</label>
       <label><input id="attack" type="checkbox" /> 내부자 협력 공격</label>
-      <label>악성 클라이언트 <input id="malicious" value="0,1" /></label>
+      <label>악성 후보 (공격 ON 시 서버가 2개를 랜덤 선정) <input id="malicious" value="0,1" /></label>
       <div class="experiment-actions">
         <button onclick="saveExperimentConfig()">설정 저장</button>
         <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
@@ -58,6 +66,7 @@
             <th>악성 클라이언트</th>
             <th>지연 클라이언트</th>
             <th>방어</th>
+            <th>방어 사용</th>
             <th>단일 실행</th>
           </tr>
         </thead>
@@ -70,6 +79,7 @@
         <p id="data-status">확인 중...</p>
       </div>
       <p id="experiment-status">확인 중...</p>
+      <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
       <pre id="experiment-log"></pre>
     </div>
 
@@ -109,7 +119,10 @@
             participation_rate: Number(document.getElementById('participation').value),
             seed: Number(document.getElementById('seed').value),
             data_distribution: document.getElementById('distribution').value,
+            round_type: document.getElementById('round-type').value,
+            dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
             defense: document.getElementById('defense').value,
+            defense_enabled: document.getElementById('defense-enabled').checked,
             attack_enabled: document.getElementById('attack').checked,
             malicious_clients: document
               .getElementById('malicious')
@@ -151,6 +164,12 @@
         const experiment = await experimentResponse.json();
         document.getElementById('experiment-status').textContent =
           `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.config.num_rounds} · ${experiment.message}`;
+        const maliciousSelections = experiment.malicious_clients_by_round || {};
+        const selectedRounds = Object.entries(maliciousSelections)
+          .filter(([, ids]) => ids.length)
+          .map(([round, ids]) => `라운드 ${round}: 클라이언트 ${ids.join(', ')}`);
+        document.getElementById('malicious-clients-status').textContent =
+          selectedRounds.length ? selectedRounds.join(' · ') : '선정된 악성 클라이언트: 없음';
         document.getElementById('experiment-log').textContent = JSON.stringify(
           experiment.round_results.slice(-5),
           null,
@@ -185,7 +204,10 @@
         document.getElementById('participation').value = config.participation_rate;
         document.getElementById('seed').value = config.seed;
         document.getElementById('distribution').value = config.data_distribution;
+        document.getElementById('round-type').value = config.round_type || 'federated';
+        document.getElementById('dlg-noise').value = config.dlg_noise_sigma ?? 0;
         document.getElementById('defense').value = config.defense;
+        document.getElementById('defense-enabled').checked = Boolean(config.defense_enabled);
         document.getElementById('attack').checked = config.attack_enabled;
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
@@ -216,6 +238,7 @@
                     <option value="coordinate_median" ${saved.defense === 'coordinate_median' || (!saved.defense && defaultDefense === 'coordinate_median') ? 'selected' : ''}>좌표별 중앙값</option>
                   </select>
                 </td>
+                <td><input class="round-defense-enabled" type="checkbox" ${saved.defense_enabled !== undefined ? (saved.defense_enabled ? 'checked' : '') : (defaultDefense !== 'none' ? 'checked' : '')}></td>
                 <td><button onclick="executeSingleRound(${round})">실행</button></td>
               </tr>`;
           },
@@ -235,6 +258,9 @@
             .map((value) => Number(value.trim()))
             .filter((value) => Number.isInteger(value)),
           defense: row.querySelector('.round-defense').value,
+          defense_enabled: row.querySelector('.round-defense-enabled').checked,
+          round_type: document.getElementById('round-type').value,
+          dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
         }));
       }
 
@@ -258,6 +284,9 @@
               .map((value) => Number(value.trim()))
               .filter((value) => Number.isInteger(value)),
             defense: row.querySelector('.round-defense').value,
+            defense_enabled: row.querySelector('.round-defense-enabled').checked,
+            round_type: document.getElementById('round-type').value,
+            dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
           }),
         });
         if (!response.ok) {

@@ -13,7 +13,13 @@ ROUND_LOG_FIELDS = [
     "malicious_selected",
     "malicious_accepted",
     "attack_enabled",
+    "attack_type",
+    "attack_scale",
+    "malicious_clients",
     "defense",
+    "defense_enabled",
+    "defense_type",
+    "clip_norm",
     "accuracy",
     "loss",
     "reason",
@@ -49,11 +55,12 @@ def save_experiment_outputs(
             writer.writerow(
                 {
                     key: (
-                        ",".join(map(str, result[key]))
-                        if isinstance(result[key], list)
-                        else result[key]
+                        ",".join(map(str, value))
+                        if isinstance(value, list)
+                        else value
                     )
                     for key in ROUND_LOG_FIELDS
+                    for value in [result.get(key, "")]
                 }
             )
 

@@ -3,7 +3,7 @@ import json
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from services.dlg_attack import create_dummy_image, reconstruct_image
+from server.services.dlg_attack import create_dummy_image, reconstruct_image
 
 
 dlg_bp = Blueprint("server_dlg", __name__)

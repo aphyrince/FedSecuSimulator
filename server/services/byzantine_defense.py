@@ -1,15 +1,25 @@
 """내부자 공격 업데이트에 대한 방어 집계 서비스."""
 
 from typing import Any
+from common.model import finite_number, weights_norm
+from common.updates import update_delta, with_delta
 
 
 def apply_norm_clipping(
-    updates: list[dict[str, Any]], max_norm: float
+    updates: list[dict[str, Any]], max_norm: float, global_model: dict | None = None
 ) -> list[dict[str, Any]]:
     """각 업데이트의 model_delta를 최대 노름 이하로 축소한다."""
     clipped = []
-    max_norm = max(float(max_norm), 0.0)
+    max_norm = finite_number(max_norm, "max_norm", positive=True)
     for update in updates:
+        if global_model is not None:
+            delta = update_delta(global_model, update)
+            norm = weights_norm(delta)
+            factor = min(1.0, max_norm / norm) if norm else 1.0
+            item = with_delta(global_model, update, {key: value * factor for key, value in delta.items()})
+            item["update"].update(defense="norm_clipping", clip_factor=factor, original_norm=norm)
+            clipped.append(item)
+            continue
         item = dict(update)
         delta = item.get("update", {}).get("model_delta", 0.0)
         delta = float(delta) if isinstance(delta, (int, float)) else 0.0

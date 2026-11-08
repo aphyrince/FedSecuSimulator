@@ -1,10 +1,10 @@
 import threading
 from pathlib import Path
 
-from services.data_loader import CifarDataLoader
-from services.data_splitter import DataSplitter
-from services.rest_client import RestClient
-from utils.data_config import read_data_config
+from exp_manager.services.data_loader import CifarDataLoader
+from exp_manager.services.data_splitter import DataSplitter
+from exp_manager.services.rest_client import RestClient
+from exp_manager.utils.data_config import read_data_config
 
 
 class DataDistributionManager:
@@ -88,6 +88,10 @@ class DataDistributionManager:
             raise ValueError("훈련 데이터가 비어 있습니다.")
         if sum(item["end"] for item in test_segments) == 0:
             raise ValueError("테스트 데이터가 비어 있습니다.")
+        for train in train_segments:
+            for test in test_segments:
+                if train["file"] == test["file"] and train["start"] < test["end"] and test["start"] < train["end"]:
+                    raise ValueError("훈련과 테스트 데이터 범위가 겹칩니다.")
 
     def _send_test_range(self, payload: dict):
         server_url = (

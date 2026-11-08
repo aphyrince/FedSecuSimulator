@@ -1,10 +1,10 @@
 from flask import Blueprint
 
-from routes.aggregation import aggregation_bp
-from routes.dataset import dataset_bp
-from routes.experiment import experiment_bp
-from routes.system import system_bp
-from routes.dlg import dlg_bp
+from server.routes.aggregation import aggregation_bp
+from server.routes.dataset import dataset_bp
+from server.routes.experiment import experiment_bp
+from server.routes.system import system_bp
+from server.routes.dlg import dlg_bp
 
 
 # 중앙 서버의 시스템·실험·데이터·집계 API를 기능별로 구성한다.

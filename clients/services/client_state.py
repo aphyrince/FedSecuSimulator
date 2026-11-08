@@ -1,12 +1,18 @@
 """클라이언트 프로세스의 실험 상태를 관리한다."""
 
 from typing import Any
+import threading
+from pathlib import Path
+import torch
+from common.model import decode_weights, encode_weights
 
 
 class ClientState:
     """Flask route에서 사용하는 클라이언트 상태 모음."""
 
-    def __init__(self) -> None:
+    def __init__(self, results_dir: Path | None = None) -> None:
+        self.results_dir = results_dir or Path(__file__).resolve().parents[2] / "results"
+        self.training_lock = threading.Lock()
         self.experiment_config: dict[str, Any] = {}
         self.dataset_range: dict[str, Any] = {}
         self.available = True
@@ -45,17 +51,38 @@ class ClientState:
         return self.dataset_range
 
     def receive_global_model(self, model: dict[str, Any]) -> dict[str, Any]:
+        if self.global_model.get("experiment_id") != model.get("experiment_id") or model.get("round") == 1:
+            self.local_training_results.clear()
+            self.extracted_updates.clear()
+            self.received_malicious_updates.clear()
+            self.expired_rounds.clear()
         self.global_model = model
-        self.global_models.append(model)
+        self.global_models.append({key: value for key, value in model.items() if key not in ("weights", "training_config")})
         return self.global_model
 
     def save_training(self, training_record: dict[str, Any]) -> None:
         round_id = int(training_record["round"])
         self.latest_local_training = training_record
-        self.local_training_results.append(training_record)
+        summary = {key: value for key, value in training_record.items() if key not in ("local_model", "model_delta", "extracted_update")}
+        self.local_training_results.append(summary)
         extracted_update = training_record.get("extracted_update")
         if isinstance(extracted_update, dict):
-            self.extracted_updates[round_id] = extracted_update
+            root = self.results_dir
+            experiment_id = str(training_record["local_model"].get("experiment_id", "experiment"))
+            path = root / experiment_id / "clients" / f"client_{training_record['client_id']}" / f"round_{round_id:04d}.pt"
+            if not path.resolve().is_relative_to(root.resolve()):
+                raise ValueError("Invalid experiment checkpoint path")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"weights": decode_weights(training_record["local_model"]["weights"]),
+                        "delta": decode_weights(extracted_update["values"]), "metadata": summary}, path)
+            self.extracted_updates[round_id] = {"checkpoint": str(path), "update_norm": extracted_update["update_norm"]}
+
+    def get_extracted_update(self, round_id: int):
+        item = self.extracted_updates.get(round_id)
+        if item is None:
+            return None
+        saved = torch.load(item["checkpoint"], map_location="cpu", weights_only=True)
+        return {"values": encode_weights(saved["delta"]), "update_norm": item["update_norm"]}
 
     def save_submission(self, round_id: int, submission: dict[str, Any]) -> None:
         self.submitted_updates[round_id] = submission

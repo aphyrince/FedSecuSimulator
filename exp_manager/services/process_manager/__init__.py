@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
-from utils.project_root_path import PROJECT_ROOT_PATH
-from services.rest_client import RestClient
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
+from exp_manager.services.rest_client import RestClient
 
 
 class ProcessManager:
@@ -85,8 +85,12 @@ class ProcessManager:
                 )
                 self.client_processes[client_id] = process
 
-        self._wait_until_ready()
-        self.sync_client_registry()
+        try:
+            self._wait_until_ready()
+            self.sync_client_registry()
+        except Exception:
+            self.stop()
+            raise
         return self.status()
 
     def client_registry(self):
@@ -110,7 +114,7 @@ class ProcessManager:
         )
 
     # 모든 프로세스가 /health 에 응답하는지 확인
-    def _wait_until_ready(self, timeout: float = 10.0):
+    def _wait_until_ready(self, timeout: float = 60.0):
         deadline = time.monotonic() + timeout
         server_url = f"http://{self.host}:{self.server_port}"
         client_urls = [
@@ -123,6 +127,7 @@ class ProcessManager:
             ):
                 return
             time.sleep(0.1)
+        raise RuntimeError("서버/클라이언트가 준비되지 않았습니다. 터미널의 프로세스 오류를 확인하세요.")
 
     def stop(self):
         with self.lock:

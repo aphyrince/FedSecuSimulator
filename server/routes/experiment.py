@@ -1,5 +1,9 @@
 from flask import Blueprint, current_app, jsonify, request
-from config.model_state import create_random_global_model
+from server.config.model_state import create_random_global_model
+from common.model import model_config, save_model_checkpoint
+from pathlib import Path
+from common.training import TrainingSettings
+import re
 
 
 experiment_bp = Blueprint("server_experiment", __name__)
@@ -20,12 +24,35 @@ def get_config():
 @experiment_bp.post("/api/round/config")
 def set_round_config():
     payload = request.get_json(silent=True) or {}
+    lock = current_app.extensions.get("round_lock")
+    if lock is not None and lock.locked():
+        return jsonify(error="A round is already running"), 409
+    try:
+        TrainingSettings.from_dict(payload)
+        model_config(payload.get("model_config"))
+        experiment_id = payload.get("experiment_id", "experiment")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", experiment_id):
+            raise ValueError("experiment_id must use letters, numbers, underscores or hyphens")
+    except (TypeError, ValueError) as error:
+        return jsonify(error=str(error)), 400
     current_app.extensions["round_config"] = payload
-    if current_app.extensions.get("global_model") is None:
+    previous = current_app.extensions.get("global_model")
+    if previous is not None and previous.get("experiment_id") == experiment_id and payload.get("round") != 1 and model_config(payload.get("model_config")) != previous.get("model_config"):
+        return jsonify(error="Model architecture cannot change within an experiment"), 400
+    if previous is None or previous.get("experiment_id") != experiment_id or payload.get("round") == 1:
         current_app.extensions["global_model"] = create_random_global_model(
             seed=payload.get("seed", 42),
             num_parameters=payload.get("num_parameters", 32),
+            model_config=payload.get("model_config"),
         )
+        current_app.extensions["global_model"]["experiment_id"] = experiment_id
+        for key in ("round_updates", "update_submission_status", "evaluation_results", "expected_sample_counts"):
+            current_app.extensions[key] = {}
+        current_app.extensions["completed_rounds"] = set()
+        current_app.extensions["global_model_history"] = []
+        current_app.extensions["round_results"] = []
+        root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
+        save_model_checkpoint(current_app.extensions["global_model"], root / experiment_id / "checkpoints" / "global_0000.pt")
     return jsonify(status="configured", round=payload.get("round"), config=payload)
 
 

@@ -1,4 +1,4 @@
-from services.data_distribution import DataDistributionManager
+from exp_manager.services.data_distribution import DataDistributionManager
 
 
 class DataManager(DataDistributionManager):

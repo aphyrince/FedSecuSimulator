@@ -1,8 +1,8 @@
 from flask import Blueprint
 
-from routes.data import data_bp
-from routes.experiment import experiment_bp
-from routes.system import system_bp
+from exp_manager.routes.data import data_bp
+from exp_manager.routes.experiment import experiment_bp
+from exp_manager.routes.system import system_bp
 
 
 # 기능별 Blueprint를 하나의 관리자 API로 등록한다.

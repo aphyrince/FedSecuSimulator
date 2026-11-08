@@ -2,16 +2,17 @@ import argparse
 import os
 import sys
 
-from flask import Flask
-from werkzeug.serving import make_server
-
-from routes.api import api_bp
-from services.client_state import ClientState
-
-
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+from flask import Flask
+from werkzeug.serving import make_server
+
+from clients.routes.api import api_bp
+from clients.services.client_state import ClientState
+
+
 
 
 def create_app(client_id: int, port: int):

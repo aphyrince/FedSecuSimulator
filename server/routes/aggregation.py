@@ -3,23 +3,54 @@ import json
 import random
 import threading
 from copy import deepcopy
+from pathlib import Path
+from functools import wraps
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from flask import Blueprint, current_app, jsonify, request
 
-from services.fedavg import aggregate_coordinate_median, aggregate_fedavg
-from services.model_evaluation import evaluate_global_model
-from services.byzantine_defense import apply_norm_clipping, coordinate_median
+from server.services.fedavg import aggregate_coordinate_median, aggregate_fedavg
+from server.services.model_evaluation import evaluate_global_model
+from server.services.byzantine_defense import apply_norm_clipping
+from common.model import decode_weights, weights_norm, save_model_checkpoint, positive_int
+from common.updates import update_delta, validate_updates
+from common.training import TrainingSettings
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
+
+
+def one_round_at_a_time(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        lock = current_app.extensions.setdefault("round_lock", threading.Lock())
+        if not lock.acquire(blocking=False):
+            return jsonify(error="A round is already running"), 409
+        try:
+            return function(*args, **kwargs)
+        finally:
+            timer = current_app.extensions.pop("round_timer", None)
+            if timer is not None:
+                timer.cancel()
+            lock.release()
+    return wrapped
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/updates")
 def receive_client_update(round_id: int):
     """클라이언트가 제출한 라운드 업데이트를 검증해 라운드별로 저장한다."""
     payload = request.get_json(silent=True) or {}
+    if round_id in current_app.extensions.get("completed_rounds", set()):
+        return jsonify(error="Round is already completed"), 409
+    deadline = current_app.extensions.get("update_deadlines", {}).get(round_id)
+    if deadline and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline):
+        return jsonify(error="Submission deadline expired"), 408
+    try:
+        positive_int(payload.get("round"), "round")
+        positive_int(payload.get("client_id"), "client_id", 0)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
     if payload.get("round", round_id) != round_id:
         return jsonify(error="Round number mismatch"), 400
     client_id = payload.get("client_id")
@@ -33,9 +64,18 @@ def receive_client_update(round_id: int):
         return jsonify(error="num_samples must be a non-negative number"), 400
     if "update" not in payload or not isinstance(payload["update"], dict):
         return jsonify(error="Invalid update payload"), 400
+    try:
+        update_delta(current_app.extensions["global_model"], payload)
+        expected = current_app.extensions.get("expected_sample_counts", {}).get(round_id, {}).get(int(client_id))
+        if expected is not None and num_samples != expected:
+            raise ValueError("Submitted sample count does not match assigned data")
+    except (ValueError, KeyError, TypeError) as error:
+        return jsonify(error=str(error)), 400
 
     updates = current_app.extensions.setdefault("round_updates", {})
     round_updates = updates.setdefault(round_id, {})
+    if int(client_id) in round_updates:
+        return jsonify(error="Duplicate client update"), 409
     round_updates[int(client_id)] = payload
     statuses = current_app.extensions.setdefault("update_submission_status", {})
     round_status = statuses.setdefault(round_id, {})
@@ -153,6 +193,7 @@ def aggregate_round(round_id: int):
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/execute")
+@one_round_at_a_time
 def execute_round(round_id: int):
     """수신한 클라이언트 업데이트를 유효성 검사하고 단일 라운드를 집계한다."""
     payload = request.get_json(silent=True) or {}
@@ -160,11 +201,16 @@ def execute_round(round_id: int):
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/start")
+@one_round_at_a_time
 def start_round(round_id: int):
     """실험 관리자의 시작 신호를 받아 선택 클라이언트 실행과 집계를 처리한다."""
+    if round_id in current_app.extensions.get("completed_rounds", set()):
+        return jsonify(error="Configure a new experiment before reusing a completed round"), 409
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
     config["round"] = round_id
+    if not current_app.extensions.get("dataset_range", {}).get("ranges"):
+        return jsonify(error="Distribute the test dataset before starting"), 409
 
     registered = list(current_app.extensions.get("clients", {}).values())
     if not registered:
@@ -210,13 +256,18 @@ def start_round(round_id: int):
     selected_clients = [available_clients[index] for index in selected]
     selected_ids = [client["client_id"] for client in selected_clients]
     current_app.extensions["selected_clients"][round_id] = selected_ids
+    limit = TrainingSettings.from_dict(config).max_train_samples
+    counts = {item["client_id"]: item.get("num_samples", 0) for item in availability_responses}
+    current_app.extensions.setdefault("expected_sample_counts", {})[round_id] = {
+        client_id: min(counts[client_id], limit) if limit else counts[client_id] for client_id in selected_ids
+    }
     current_app.extensions["update_submission_status"][round_id] = {
         client_id: {"status": "waiting"}
         for client_id in selected_ids
     }
 
     timeout_seconds = float(
-        config.get("round_timeout", config.get("update_timeout", 60.0))
+        config.get("round_timeout", config.get("update_timeout", 900.0))
     )
     app = current_app._get_current_object()
     deadline = datetime.now(timezone.utc) + timedelta(seconds=max(0, timeout_seconds))
@@ -228,6 +279,8 @@ def start_round(round_id: int):
         from flask import current_app as flask_current_app
 
         with app.app_context():
+            if round_id in app.extensions.get("completed_rounds", set()):
+                return
             flask_current_app.extensions.setdefault("update_submission_status", {})[
                 round_id
             ]
@@ -254,6 +307,7 @@ def start_round(round_id: int):
 
     timer = threading.Timer(timeout_seconds, notify_expired)
     timer.daemon = True
+    current_app.extensions["round_timer"] = timer
     timer.start()
 
     global_model = current_app.extensions.get("global_model")
@@ -263,7 +317,9 @@ def start_round(round_id: int):
         try:
             _post_json(
                 f"{client['url']}/api/model/global",
-                {**global_model, "round": round_id},
+                {**global_model, "round": round_id, "training_config": {**TrainingSettings.from_dict(config).to_dict(), "seed": seed},
+                 "update_deadline": deadline.isoformat()},
+                timeout=max(0.001, (deadline - datetime.now(timezone.utc)).total_seconds()),
             )
         except (OSError, ValueError):
             current_app.logger.warning(
@@ -379,6 +435,7 @@ def start_round(round_id: int):
     received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
     updates = list(received_response.values())
     if not updates:
+        timer.cancel()
         return jsonify(error="No client updates received"), 409
 
     result_payload = {
@@ -389,144 +446,95 @@ def start_round(round_id: int):
         ],
         "updates": updates,
     }
+    timer.cancel()
     return execute_result(round_id, result_payload)
 
 
 def execute_result(round_id: int, payload: dict):
-    updates = [update for update in payload.get("updates", []) if update.get("valid", True)]
-    if not updates:
-        return jsonify(error="At least one valid update is required"), 400
-
-    delta_values = [
-        update["update"]["model_delta"]
-        for update in updates
-        if isinstance(update["update"].get("model_delta"), (int, float))
-    ]
-    if delta_values:
-        values = delta_values
-    else:
-        values = [
-            update["update"].get("update_norm", 0.0)
-            for update in updates
-        ]
-    defense_enabled = bool(payload.get("defense_enabled", payload.get("defense") != "none"))
+    """업데이트 검증 → 방어 → 집계 → 평가 → 모델 반영 및 결과 기록 순서로 처리한다."""
+    if round_id in current_app.extensions.get("completed_rounds", set()):
+        return jsonify(error="Round is already completed"), 409
+    initial = current_app.extensions.get("global_model")
+    updates = [item for item in payload.get("updates", []) if item.get("valid") is True]
+    defense_enabled = bool(payload.get("defense_enabled", payload.get("defense", "none") != "none"))
     defense_type = payload.get("defense", "none")
-    if defense_enabled and defense_type == "coordinate_median":
-        aggregated_delta = coordinate_median(updates)
-    else:
+    try:
+        if initial is None:
+            raise ValueError("Configure the round before execution")
+        validate_updates(initial, updates)
+        selected_ids = payload.get("selected_clients", [])
+        if any(item["round"] != round_id or item["client_id"] not in selected_ids for item in updates):
+            raise ValueError("Update round or participation mismatch")
+        experiment_id = initial["experiment_id"]
+        if payload.get("experiment_id") != experiment_id:
+            raise ValueError("Experiment identity mismatch")
         if defense_enabled and defense_type == "norm_clipping":
-            updates = apply_norm_clipping(
-                updates, payload.get("clip_norm", 1.0)
-            )
-            values = [
-                update["update"]["model_delta"] for update in updates
-            ]
-        aggregated_delta = sum(values) / len(values)
+            updates = apply_norm_clipping(updates, payload.get("clip_norm", 1.0), global_model=initial)
+        elif defense_enabled and defense_type != "coordinate_median":
+            raise ValueError("Unsupported defense")
+        aggregate = aggregate_coordinate_median if defense_enabled and defense_type == "coordinate_median" else aggregate_fedavg
+        aggregated = aggregate(initial, updates)
+        updated = aggregated["global_model"]
+        evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), payload, round_id)
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+        return jsonify(error=str(error), status="failed", round=round_id), 400
 
-    attack = payload.get("attack_enabled", False)
-    selected_ids = payload.get("selected_clients", [])
-    accepted_ids = [update["client_id"] for update in updates]
+    # 텐서 원본은 디스크에 한 번 저장하고 HTTP 응답과 화면 로그에는 요약만 남긴다.
+    import torch
+    root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
+    experiment_dir = root / experiment_id
+    if not experiment_dir.resolve().is_relative_to(root.resolve()):
+        return jsonify(error="Invalid experiment result path"), 400
+    checkpoint = experiment_dir / "checkpoints" / f"global_{updated['model_version']:04d}.pt"
+    save_model_checkpoint(updated, checkpoint)
+    for item in updates:
+        path = experiment_dir / "updates" / f"round_{round_id:04d}_client_{item['client_id']}.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"round": round_id, "client_id": item["client_id"], "num_samples": item["num_samples"],
+                    "base_model_hash": item["base_model_hash"], "base_model_version": item["base_model_version"],
+                    "delta": update_delta(initial, item)}, path)
+    initial_state, updated_state = decode_weights(initial["weights"]), decode_weights(updated["weights"])
+    delta_norm = weights_norm({key: updated_state[key] - initial_state[key] for key in initial_state})
+    model_summary = {key: value for key, value in updated.items() if key != "weights"}
+    model_summary["checkpoint"] = str(checkpoint)
+    accepted_ids = [item["client_id"] for item in updates]
     malicious_ids = payload.get("malicious_clients", [])
-    try:
-        if defense_enabled and defense_type == "coordinate_median":
-            fedavg_result = aggregate_coordinate_median(
-                current_app.extensions.get("global_model", {}),
-                updates,
-            )
-        else:
-            fedavg_result = aggregate_fedavg(
-                current_app.extensions.get("global_model", {}),
-                updates,
-            )
-        current_app.extensions["global_model"] = fedavg_result["global_model"]
-        current_app.extensions.setdefault("global_model_history", []).append({
-            "round": round_id,
-            "model": deepcopy(fedavg_result["global_model"]),
-            "total_samples": fedavg_result["total_samples"],
-            "client_weights": fedavg_result["client_weights"],
-        })
-    except ValueError as exc:
-        current_app.logger.warning("FedAvg update skipped: %s", exc)
-        fedavg_result = {
-            "total_samples": 0,
-            "client_weights": {},
-        }
-
-    try:
-        evaluation = evaluate_global_model(
-            global_model=current_app.extensions.get("global_model", {}),
-            dataset_range=current_app.extensions.get("dataset_range", {}),
-            evaluation_config=payload,
-            round_id=round_id,
-        )
-        current_app.extensions["evaluation_results"][round_id] = evaluation
-    except (ValueError, TypeError, KeyError) as exc:
-        current_app.logger.warning(
-            "Global model evaluation failed: round=%s error=%s",
-            round_id,
-            exc,
-        )
-        evaluation = {
-            "accuracy": 0.0,
-            "loss": 1.0,
-            "num_test_samples": 0,
-            "correct_predictions": 0,
-            "metrics": {},
-        }
-        current_app.extensions["evaluation_results"][round_id] = evaluation
-
-    accuracy = evaluation["accuracy"]
-    loss = evaluation["loss"]
-
     result = {
-        "experiment_id": payload.get("experiment_id", "unknown"),
-        "round": round_id,
-        "model_version": round_id,
-        "selected_clients": payload.get("selected_clients", []),
-        "accepted_clients": accepted_ids,
-        "delayed_clients": payload.get("delay_clients", []),
-        "malicious_clients": malicious_ids,
-        "malicious_selected": [
-            client_id for client_id in selected_ids if client_id in malicious_ids
-        ],
-        "malicious_accepted": [
-            client_id for client_id in accepted_ids if client_id in malicious_ids
-        ],
-        "available_clients": current_app.extensions.get("available_clients", {}).get(
-            round_id, []
-        ),
-        "attack_enabled": attack,
-        "attack_type": "insider_collusion" if attack else None,
-        "defense": payload.get("defense", "none"),
-        "defense_enabled": defense_enabled,
+        "experiment_id": experiment_id, "round": round_id, "model_version": updated["model_version"],
+        "selected_clients": selected_ids, "accepted_clients": accepted_ids,
+        "delayed_clients": payload.get("delay_clients", []), "malicious_clients": malicious_ids,
+        "malicious_selected": sorted(set(selected_ids) & set(malicious_ids)),
+        "malicious_accepted": sorted(set(accepted_ids) & set(malicious_ids)),
+        "available_clients": current_app.extensions.get("available_clients", {}).get(round_id, []),
+        "attack_enabled": bool(payload.get("attack_enabled", False)),
+        "attack_type": "insider_collusion" if payload.get("attack_enabled") else None,
+        "attack_applied": any(item["update"].get("attack_applied", False) for item in updates),
+        "defense": defense_type, "defense_enabled": defense_enabled,
         "defense_type": defense_type if defense_enabled else None,
-        "clip_norm": payload.get("clip_norm", 1.0),
-        "attack_scale": payload.get("attack_scale", -5.0),
-        "accuracy": round(accuracy, 4),
-        "loss": round(loss, 4),
-        "aggregated_delta": round(aggregated_delta, 4),
-        "global_model_version": current_app.extensions["global_model"].get(
-            "model_version", round_id
-        ),
-        "fedavg_samples": fedavg_result["total_samples"],
-        "fedavg_client_weights": fedavg_result["client_weights"],
-        "global_model": deepcopy(current_app.extensions["global_model"]),
-        "evaluation": deepcopy(evaluation),
-        "client_updates": deepcopy(updates),
-        "reason": "model_updated",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "clip_norm": payload.get("clip_norm", 1.0), "attack_scale": payload.get("attack_scale", -5.0),
+        "accuracy": evaluation["accuracy"], "loss": evaluation["loss"],
+        "aggregated_delta": delta_norm, "global_model_version": updated["model_version"],
+        "initial_model_hash": initial["initial_model_hash"],
+        "training_config": TrainingSettings.from_dict(payload).to_dict(),
+        "training_datasets": {str(item["client_id"]): {"fingerprint": item.get("dataset_fingerprint"), "num_samples": item["num_samples"]} for item in updates},
+        "fedavg_samples": aggregated["total_samples"], "fedavg_client_weights": aggregated["client_weights"],
+        "global_model": model_summary, "evaluation": evaluation,
+        "client_updates": [{key: value for key, value in item.items() if key not in ("local_model", "update")} |
+                           {"update": {key: value for key, value in item["update"].items() if key != "values"}} for item in updates],
+        "reason": "model_updated", "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    current_app.extensions["global_model"] = updated
+    current_app.extensions.setdefault("global_model_history", []).append({
+        "round": round_id, "model": model_summary,
+        "total_samples": aggregated["total_samples"], "client_weights": aggregated["client_weights"],
+    })
+    current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
+    current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
+    current_app.extensions["round_results"].append(result)
     callback_url = payload.get("experiment_manager_url")
     if callback_url:
         try:
-            _post_json(
-                callback_url.rstrip("/") + "/api/results/round",
-                result,
-                timeout=3.0,
-            )
+            _post_json(callback_url.rstrip("/") + "/api/results/round", result, timeout=30.0)
         except (OSError, ValueError, URLError):
-            current_app.logger.warning(
-                "Experiment manager result callback failed: round=%s", round_id
-            )
-    current_app.extensions["round_results"].append(result)
+            current_app.logger.warning("Result callback failed: round=%s", round_id)
     return jsonify(result)

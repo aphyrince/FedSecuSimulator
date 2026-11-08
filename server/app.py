@@ -9,7 +9,7 @@ if PROJECT_ROOT not in sys.path:
 from flask import Flask
 from werkzeug.serving import make_server
 
-from routes.api import api_bp
+from server.routes.api import api_bp
 
 
 def create_app(host: str, port: int):

@@ -1,129 +1,56 @@
-"""FedAvg 집계 인터페이스와 기본 JSON 모델 구현."""
+"""기존 REST 응답 키를 유지하는 텐서 기반 FedAvg 및 좌표별 중앙값 집계."""
 
 from copy import deepcopy
 from typing import Any, TypedDict
+import torch
+
+from common.model import decode_weights, encode_weights
+from common.updates import update_delta, validate_updates
+from fedsec.contracts import ClientUpdate
+from fedsec.aggregation import aggregate_fedavg as aggregate_core
 
 
 class FedAvgResult(TypedDict):
-    """FedAvg 결과와 집계 메타데이터."""
-
     global_model: dict[str, Any]
     total_samples: int
     client_weights: dict[str, float]
 
 
-def _weighted_average(values: list[Any], weights: list[float]) -> Any:
-    if not values:
-        return None
-    if isinstance(values[0], dict):
-        keys = sorted(set().union(*(item.keys() for item in values)))
-        return {
-            key: _weighted_average(
-                [item.get(key, 0) for item in values],
-                weights,
-            )
-            for key in keys
-        }
-    if isinstance(values[0], list):
-        length = max(len(item) for item in values)
-        return [
-            _weighted_average(
-                [item[index] if index < len(item) else 0 for item in values],
-                weights,
-            )
-            for index in range(length)
-        ]
-    return sum(float(value) * weight for value, weight in zip(values, weights))
+def _accepted(global_model: dict, client_updates: list[dict]) -> list[dict]:
+    accepted = [item for item in client_updates if item.get("valid") is True]
+    return validate_updates(global_model, accepted)
 
 
-def aggregate_fedavg(
-    global_model: dict[str, Any],
-    client_updates: list[dict[str, Any]],
-) -> FedAvgResult:
-    """표본 수를 가중치로 사용해 클라이언트 로컬 모델을 FedAvg한다.
-
-    실제 팀원이 구현할 FedAvg/PyTorch 코드는 이 함수의 반환 형식을 유지하고,
-    `local_model`과 `num_samples`를 읽어 전역 모델을 갱신하면 된다.
-    """
-    valid_updates = [
-        update
-        for update in client_updates
-        if update.get("valid", False)
-        and update.get("local_model", {}).get("weights") is not None
-        and update.get("num_samples", 0) > 0
-    ]
-    if not valid_updates:
-        raise ValueError("No valid local models are available for FedAvg")
-
-    weights = [
-        float(update["num_samples"])
-        for update in valid_updates
-    ]
-    total_samples = sum(weights)
-    normalized_weights = [weight / total_samples for weight in weights]
-    client_models = [update["local_model"]["weights"] for update in valid_updates]
-    aggregated_weights = _weighted_average(client_models, normalized_weights)
-
-    updated_model = deepcopy(global_model)
-    updated_model["weights"] = aggregated_weights
-    updated_model["model_version"] = int(global_model.get("model_version", 0)) + 1
-    client_weight_map = {
-        str(update["client_id"]): round(
-            float(update["num_samples"]) / total_samples,
-            8,
-        )
-        for update in valid_updates
-    }
-    return {
-        "global_model": updated_model,
-        "total_samples": int(total_samples),
-        "client_weights": client_weight_map,
-    }
+def _result(global_model: dict, delta: dict, updates: list[dict], weights: list[float]) -> FedAvgResult:
+    initial = decode_weights(global_model["weights"])
+    updated = deepcopy(global_model)
+    updated["weights"] = encode_weights({key: initial[key].double() + delta[key] for key in initial})
+    updated["model_version"] = int(global_model["model_version"]) + 1
+    return {"global_model": updated, "total_samples": sum(item["num_samples"] for item in updates),
+            "client_weights": {str(item["client_id"]): weight for item, weight in zip(updates, weights)}}
 
 
-def aggregate_coordinate_median(
-    global_model: dict[str, Any],
-    client_updates: list[dict[str, Any]],
-) -> FedAvgResult:
-    """숫자 가중치 벨 모델의 좌표별 중앙값을 계산한다."""
-    valid_updates = [
-        update for update in client_updates
-        if update.get("valid", False)
-        and update.get("local_model", {}).get("weights") is not None
-    ]
-    if not valid_updates:
-        raise ValueError("No valid local models are available for median aggregation")
+def aggregate_fedavg(global_model: dict, client_updates: list[dict]) -> FedAvgResult:
+    """각 업데이트에 표본 수 비율을 곱해 합산한 뒤 시작 전역 모델에 더한다."""
+    updates = _accepted(global_model, client_updates)
+    total = sum(item["num_samples"] for item in updates)
+    weights = [item["num_samples"] / total for item in updates]
+    tensors = [ClientUpdate(item["client_id"], item["num_samples"], update_delta(global_model, item))
+               for item in updates]
+    updated = deepcopy(global_model)
+    updated["weights"] = encode_weights(aggregate_core(decode_weights(global_model["weights"]), tensors))
+    updated["model_version"] = int(global_model["model_version"]) + 1
+    return {"global_model": updated, "total_samples": total,
+            "client_weights": {str(item["client_id"]): weight for item, weight in zip(updates, weights)}}
 
-    def median(values: list[Any]) -> Any:
-        if isinstance(values[0], dict):
-            keys = sorted(set().union(*(item.keys() for item in values)))
-            return {
-                key: median([item.get(key, 0) for item in values])
-                for key in keys
-            }
-        if isinstance(values[0], list):
-            length = max(len(item) for item in values)
-            return [
-                median([item[index] if index < len(item) else 0 for item in values])
-                for index in range(length)
-            ]
-        ordered = sorted(float(value) for value in values)
-        middle = len(ordered) // 2
-        if len(ordered) % 2:
-            return ordered[middle]
-        return (ordered[middle - 1] + ordered[middle]) / 2.0
 
-    updated_model = deepcopy(global_model)
-    updated_model["weights"] = median(
-        [update["local_model"]["weights"] for update in valid_updates]
-    )
-    updated_model["model_version"] = int(global_model.get("model_version", 0)) + 1
-    total_samples = sum(int(update.get("num_samples", 0)) for update in valid_updates)
-    return {
-        "global_model": updated_model,
-        "total_samples": total_samples,
-        "client_weights": {
-            str(update["client_id"]): 1.0 / len(valid_updates)
-            for update in valid_updates
-        },
-    }
+def aggregate_coordinate_median(global_model: dict, client_updates: list[dict]) -> FedAvgResult:
+    """참여자 수가 짝수이면 가운데 두 좌표값의 평균을 사용한다."""
+    updates = _accepted(global_model, client_updates)
+    deltas = [update_delta(global_model, item) for item in updates]
+    result = {}
+    size = len(deltas)
+    for key in deltas[0]:
+        ordered = torch.stack([delta[key].double() for delta in deltas]).sort(dim=0).values
+        result[key] = (ordered[(size - 1) // 2] + ordered[size // 2]) / 2
+    return _result(global_model, result, updates, [1 / size] * size)

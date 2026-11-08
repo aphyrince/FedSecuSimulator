@@ -3,7 +3,7 @@ from os import environ
 
 from dotenv import load_dotenv
 
-from utils.project_root_path import PROJECT_ROOT_PATH
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"

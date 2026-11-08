@@ -24,7 +24,7 @@ def start():
     # 가상 라운드 실행을 백그라운드 스레드에서 시작한다.
     try:
         return jsonify(current_app.extensions["experiment_manager"].start())
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 409
 
 

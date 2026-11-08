@@ -1,14 +1,20 @@
 import argparse
 import atexit
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from flask import Flask
 from werkzeug.serving import make_server
 
-from routes.api import api_bp
-from services.experiment_runner import ExperimentManager
-from services.process_manager import ProcessManager
-from services.data_distribution import DataDistributionManager
-from utils.project_root_path import PROJECT_ROOT_PATH
+from exp_manager.routes.api import api_bp
+from exp_manager.services.experiment_runner import ExperimentManager
+from exp_manager.services.process_manager import ProcessManager
+from exp_manager.services.data_distribution import DataDistributionManager
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 def create_app(

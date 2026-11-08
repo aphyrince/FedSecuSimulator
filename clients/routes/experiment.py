@@ -1,10 +1,12 @@
 from flask import Blueprint, current_app, jsonify, request
 
-from services.training_service import build_round_update, run_local_training
-from services.server_client import post_json
-from services.dlg_service import add_gaussian_noise, compute_single_image_gradient
-from services.dlg_data_loader import load_image, load_label
+from clients.services.training_service import build_round_update, run_local_training
+from clients.services.server_client import post_json
+from clients.services.dlg_service import add_gaussian_noise, compute_single_image_gradient
+from clients.services.dlg_data_loader import load_image, load_label
 from pathlib import Path
+from clients.services.collusion import collude_updates
+from common.model import MODEL_FORMAT
 
 experiment_bp = Blueprint("client_experiment", __name__)
 PROJECT_ROOT_PATH = Path(__file__).resolve().parents[2]
@@ -33,19 +35,26 @@ def receive_global_model():
     """중앙 서버가 전달한 전역 모델을 수신해 로컬 최신 모델로 저장한다."""
     payload = request.get_json(silent=True) or {}
     state = current_app.extensions["client_state"]
-    state.receive_global_model(payload)
-
-    training_record = run_local_training(
-        state=state,
-        client_id=current_app.config["CLIENT_ID"],
-        global_model=payload,
-    )
+    if not state.training_lock.acquire(blocking=False):
+        return jsonify(error="Client is already training"), 409
+    try:
+        # 실패한 학습 결과가 제출되지 않도록 시작 전에 이전 완료 상태를 초기화한다.
+        state.latest_local_training = {}
+        state.expired_rounds.discard(int(payload.get("round", 1)))
+        state.receive_global_model(payload)
+        training_record = run_local_training(state, current_app.config["CLIENT_ID"], payload)
+    except TimeoutError as error:
+        return jsonify(error=str(error)), 408
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        return jsonify(error=str(error)), 400
+    finally:
+        state.training_lock.release()
 
     return jsonify(
         status="received",
         client_id=current_app.config["CLIENT_ID"],
         model_version=payload.get("model_version"),
-        training=training_record,
+        training={key: training_record[key] for key in ("round", "client_id", "status", "num_samples", "training_loss")},
     )
 
 
@@ -58,11 +67,10 @@ def get_global_model():
 def execute_round():
     """실험 관리자가 요청한 로컬 라운드 업데이트를 생성한다."""
     payload = request.get_json(silent=True) or {}
-    update = build_round_update(
-        state=current_app.extensions["client_state"],
-        client_id=current_app.config["CLIENT_ID"],
-        request_payload=payload,
-    )
+    try:
+        update = build_round_update(current_app.extensions["client_state"], current_app.config["CLIENT_ID"], payload)
+    except (ValueError, KeyError) as error:
+        return jsonify(error=str(error)), 409
     return jsonify(update)
 
 
@@ -72,13 +80,14 @@ def submit_round_update():
     payload = request.get_json(silent=True) or {}
     round_id = int(payload.get("round", 1))
     state = current_app.extensions["client_state"]
-    update = build_round_update(
-        state=state,
-        client_id=current_app.config["CLIENT_ID"],
-        request_payload=payload,
-    )
+    try:
+        update = build_round_update(state, current_app.config["CLIENT_ID"], payload)
+    except (ValueError, KeyError) as error:
+        return jsonify(error=str(error)), 409
     if isinstance(payload.get("colluded_update"), dict):
         update = payload["colluded_update"]
+    if update.get("client_id") != current_app.config["CLIENT_ID"] or update.get("round") != round_id:
+        return jsonify(error="Submission identity mismatch"), 400
     server_url = payload.get("server_url", current_app.config["SERVER_URL"])
     response = post_json(
         f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
@@ -106,30 +115,13 @@ def collude_round_updates():
             state.received_malicious_updates.get(round_id, {}).values()
         )
 
-    values = []
-    for update in [own_update, *peer_updates]:
-        value = update.get("update", {}).get("model_delta")
-        if isinstance(value, (int, float)):
-            values.append(float(value))
-    if not values:
-        return jsonify(error="No numeric malicious updates"), 400
-
-    scale = float(payload.get("attack_scale", -5.0))
-    colluded_value = (sum(values) / len(values)) * scale
-    colluded_update = {
-        **own_update,
-        "round": round_id,
-        "malicious": True,
-        "valid": True,
-        "update": {
-            **own_update.get("update", {}),
-            "model_delta": colluded_value,
-            "scale": scale,
-            "collusion_mean": sum(values) / len(values),
-            "collusion_peer_count": len(peer_updates),
-        },
-    }
-    return jsonify(colluded_update)
+    try:
+        if own_update.get("client_id") != current_app.config["CLIENT_ID"] or own_update.get("round") != round_id:
+            raise ValueError("Collusion identity mismatch")
+        return jsonify(collude_updates(state.global_model, own_update, peer_updates,
+                                        payload.get("attack_scale", -5.0), payload.get("min_colluders", 2)))
+    except (ValueError, TypeError, KeyError) as error:
+        return jsonify(error=str(error)), 400
 
 
 @experiment_bp.post("/api/round/malicious-peers")
@@ -154,6 +146,8 @@ def receive_malicious_peers():
 def start_dlg():
     """원본 이미지와 체크포인트로 단일 이미지 그래디언트를 계산한다."""
     payload = request.get_json(silent=True) or {}
+    if payload.get("global_model", {}).get("architecture") == MODEL_FORMAT:
+        return jsonify(error="The role-2 DLG implementation must be connected to common.model before using the real CNN"), 501
     round_id = int(payload.get("round", 1))
     image_path = payload.get("image_path", "")
     image = (
@@ -249,7 +243,7 @@ def get_extracted_update(round_id):
     return jsonify(
         client_id=current_app.config["CLIENT_ID"],
         round=round_id,
-        update=current_app.extensions["client_state"].extracted_updates.get(round_id),
+        update=current_app.extensions["client_state"].get_extracted_update(round_id),
     )
 
 

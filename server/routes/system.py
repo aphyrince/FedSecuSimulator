@@ -1,6 +1,6 @@
 from flask import Blueprint, current_app, jsonify, request
 
-from utils.shutdown import schedule_shutdown
+from server.utils.shutdown import schedule_shutdown
 
 
 system_bp = Blueprint("server_system", __name__)

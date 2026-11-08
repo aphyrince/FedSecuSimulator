@@ -1,0 +1,140 @@
+{
+  "experiment_id": "standalone_check_001",
+  "experiment": {
+    "num_rounds": 1,
+    "seed": 42,
+    "model_config": {
+      "channels": [
+        32,
+        64
+      ],
+      "hidden_size": 128
+    },
+    "training": {
+      "local_epochs": 1,
+      "batch_size": 32,
+      "learning_rate": 0.001,
+      "optimizer": "sgd",
+      "device": "cpu",
+      "max_train_samples": 20,
+      "max_test_samples": 100
+    },
+    "malicious_clients": [
+      2,
+      7
+    ],
+    "attack_scale": -5
+  },
+  "datasets": {
+    "source_dir": "data/raw",
+    "clients": [
+      {
+        "client_id": 0,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_1",
+            "start": 0,
+            "end": 5000
+          }
+        ]
+      },
+      {
+        "client_id": 1,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_1",
+            "start": 5000,
+            "end": 10000
+          }
+        ]
+      },
+      {
+        "client_id": 2,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_2",
+            "start": 0,
+            "end": 5000
+          }
+        ]
+      },
+      {
+        "client_id": 3,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_2",
+            "start": 5000,
+            "end": 10000
+          }
+        ]
+      },
+      {
+        "client_id": 4,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_3",
+            "start": 0,
+            "end": 5000
+          }
+        ]
+      },
+      {
+        "client_id": 5,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_3",
+            "start": 5000,
+            "end": 10000
+          }
+        ]
+      },
+      {
+        "client_id": 6,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_4",
+            "start": 0,
+            "end": 5000
+          }
+        ]
+      },
+      {
+        "client_id": 7,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_4",
+            "start": 5000,
+            "end": 10000
+          }
+        ]
+      },
+      {
+        "client_id": 8,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_5",
+            "start": 0,
+            "end": 5000
+          }
+        ]
+      },
+      {
+        "client_id": 9,
+        "ranges": [
+          {
+            "file": "cifar-10-batches-py/data_batch_5",
+            "start": 5000,
+            "end": 10000
+          }
+        ]
+      }
+    ],
+    "test_ranges": [
+      {
+        "file": "cifar-10-batches-py/test_batch",
+        "start": 0,
+        "end": 10000
+      }
+    ]
+  }
+}

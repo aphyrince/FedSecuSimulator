@@ -1,6 +1,6 @@
 from flask import Blueprint, current_app, jsonify, request
 
-from utils.shutdown import schedule_shutdown
+from clients.utils.shutdown import schedule_shutdown
 
 
 system_bp = Blueprint("client_system", __name__)
@@ -32,11 +32,14 @@ def availability():
     """현재 라운드 참여 가능 여부를 중앙 서버의 질의에 응답한다."""
     app = current_app._get_current_object()
     available = app.extensions["client_state"].available
+    state = app.extensions["client_state"]
+    available = available and bool(state.dataset_range.get("ranges")) and not state.training_lock.locked()
     payload = request.get_json(silent=True) or {}
     return jsonify(
         client_id=app.config["CLIENT_ID"],
         round=payload.get("round"),
         available=bool(available),
+        num_samples=sum(item["end"] - item["start"] for item in state.dataset_range.get("ranges", [])),
     )
 
 

@@ -4,10 +4,13 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import re
+from common.training import TrainingSettings
+from common.model import model_config, finite_number, positive_int
 
-from services.experiment_output import save_experiment_outputs, save_round_result
-from services.rest_client import RestClient
-from utils.project_root_path import PROJECT_ROOT_PATH
+from exp_manager.services.experiment_output import save_experiment_outputs, save_round_result
+from exp_manager.services.rest_client import RestClient
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 class ExperimentManager:
@@ -21,18 +24,22 @@ class ExperimentManager:
         self.stop_event = threading.Event()
         self.rest_client = RestClient()
         self.processed_rounds = set()
+        self.advanced_rounds = set()
         self.malicious_clients_by_round = {}
         self.dlg_images_by_round = {}
         self.dlg_results_by_round = {}
         self.dlg_participant_by_round = {}
         self.config = {
+            **TrainingSettings().to_dict(),
+            "model_config": model_config(),
+            "round_timeout": 900.0,
             "experiment_id": f"fedsec-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             "experiment_type": "federated",
             "seed": 42,
             "num_rounds": 10,
             "dlg_training_rounds": 5,
             "dlg_client_id": None,
-            "participation_rate": 0.5,
+            "participation_rate": 1.0,
             "malicious_clients": [0, 1],
             "attack_enabled": False,
             "attack_scale": -5.0,
@@ -47,7 +54,7 @@ class ExperimentManager:
             "defense": "none",
             "defense_enabled": False,
             "clip_norm": 1.0,
-            "delay_clients": [2, 5, 8],
+            "delay_clients": [],
             "data_distribution": "iid",
             "round_configs": [],
         }
@@ -89,7 +96,7 @@ class ExperimentManager:
 
     def update_config(self, payload: dict) -> dict:
         with self.lock:
-            if self.state["status"] == "running":
+            if self.state["status"] in ("running", "stopping"):
                 raise ValueError("실행 중에는 설정을 변경할 수 없습니다.")
             allowed = (
                 "experiment_id",
@@ -117,11 +124,25 @@ class ExperimentManager:
                 "data_distribution",
                 "round_configs",
             )
-            self.config.update({key: payload[key] for key in allowed if key in payload})
-            self._validate_config()
+            allowed = (*allowed, *TrainingSettings.__dataclass_fields__, "model_config", "round_timeout")
+            previous = self.config
+            self.config = {**previous, **{key: payload[key] for key in allowed if key in payload}}
+            try:
+                self._validate_config()
+            except (ValueError, TypeError, KeyError):
+                self.config = previous
+                raise
             return dict(self.config)
 
     def _validate_config(self):
+        TrainingSettings.from_dict(self.config)
+        model_config(self.config.get("model_config"))
+        finite_number(self.config["round_timeout"], "round_timeout", positive=True)
+        positive_int(self.config["seed"], "seed", 0)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", self.config["experiment_id"]):
+            raise ValueError("실험 ID는 영문·숫자·밑줄·하이픈으로 입력하세요.")
+        if self.config.get("experiment_type") == "dlg" or any(item.get("round_type") == "dlg" for item in self.config.get("round_configs", [])):
+            raise ValueError("실제 CNN의 DLG는 2번 담당자의 common.model 연결 후 사용할 수 있습니다.")
         if not 0 < self.config["participation_rate"] <= 1:
             raise ValueError("participation_rate는 0 초과 1 이하이어야 합니다.")
         if self.config["num_rounds"] < 1:
@@ -168,12 +189,19 @@ class ExperimentManager:
         with self.lock:
             if self.state["status"] == "running":
                 return self.status()
+            if self.state["status"] == "stopping":
+                raise RuntimeError("진행 중인 라운드가 종료될 때까지 기다려 주세요.")
+            self._validate_config()
+            directory = self.results_dir / self.config["experiment_id"]
+            if (directory / "results.json").exists() or any((directory / "rounds").glob("*.json")):
+                raise RuntimeError("결과가 이미 있는 실험 ID입니다. 새 ID를 입력하세요.")
             server_process = self.process_manager.server_process
             if not server_process or server_process.poll() is not None:
                 raise RuntimeError("중앙 서버가 실행 중이어야 합니다.")
             self.process_manager.sync_client_registry()
             self.stop_event.clear()
             self.processed_rounds.clear()
+            self.advanced_rounds.clear()
             self.state.update(
                 status="running",
                 current_round=0,
@@ -196,7 +224,7 @@ class ExperimentManager:
         return self.status()
 
     def reset(self) -> dict:
-        if self.state["status"] == "running":
+        if self.state["status"] in ("running", "stopping"):
             raise RuntimeError("실행 중인 실험은 먼저 중단해야 합니다.")
         with self.lock:
             self.state.update(
@@ -210,6 +238,7 @@ class ExperimentManager:
             )
             self.malicious_clients_by_round.clear()
             self.processed_rounds.clear()
+            self.advanced_rounds.clear()
             self.dlg_participant_by_round.clear()
         return self.status()
 
@@ -223,6 +252,9 @@ class ExperimentManager:
                     self.state["message"] = "실험이 중단되었습니다."
                 return
             self._start_round(config, 1)
+            if self.stop_event.is_set():
+                with self.lock:
+                    self.state.update(status="stopped", message="실험이 중단되었습니다.")
         except Exception as exc:
             with self.lock:
                 self.state["status"] = "failed"
@@ -254,9 +286,10 @@ class ExperimentManager:
         result = self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
             round_config,
+            timeout=float(round_config["round_timeout"]) + 120.0,
         )
         if result.get("round") == round_id:
-            self.record_round_result(result)
+            self.record_round_result(result, advance=True)
 
     def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
         """실험 관리자가 DLG 참가자를 선정하고 중앙 서버에 전달한다."""
@@ -335,7 +368,8 @@ class ExperimentManager:
             return []
 
         rng = random.Random(int(experiment_config.get("seed", 42)) + round_id * 1009)
-        selected = sorted(rng.sample(range(self.client_count), 2))
+        candidates = list(round_config.get("malicious_clients", []))
+        selected = sorted(rng.sample(candidates, min(2, len(candidates))))
         with self.lock:
             self.malicious_clients_by_round[round_id] = selected
             self.state["malicious_clients_by_round"] = dict(
@@ -367,10 +401,12 @@ class ExperimentManager:
             )
         return selected
 
-    def record_round_result(self, result: dict) -> Path:
+    def record_round_result(self, result: dict, *, advance: bool = False) -> Path:
         """라운드 결과를 상태와 JSON 파일에 기록하고 예약된 다음 라운드를 시작한다."""
         round_id = int(result["round"])
         config = self.get_config()
+        if result.get("experiment_id") != config["experiment_id"]:
+            raise ValueError("다른 실험의 결과입니다.")
         round_config = self._round_config(round_id, config)
         malicious_clients = self.malicious_clients_by_round.get(
             round_id, result.get("malicious_clients", [])
@@ -386,7 +422,7 @@ class ExperimentManager:
                 else None
             ),
             "malicious_clients": malicious_clients,
-            "malicious_selected": malicious_clients,
+            "malicious_selected": sorted(set(result.get("selected_clients", [])) & set(malicious_clients)),
             "defense_enabled": bool(result.get("defense_enabled", defense_enabled)),
             "defense": result.get("defense", round_config.get("defense", "none")),
             "defense_type": (
@@ -402,7 +438,9 @@ class ExperimentManager:
         round_path = save_round_result(self.results_dir, config, result)
 
         with self.lock:
-            is_duplicate = round_id in self.processed_rounds
+            should_advance = advance and round_id not in self.advanced_rounds
+            if should_advance:
+                self.advanced_rounds.add(round_id)
             self.processed_rounds.add(round_id)
             results = [
                 item
@@ -415,18 +453,18 @@ class ExperimentManager:
             self.state["current_round"] = round_id
 
         if (
-            not is_duplicate
+            should_advance
             and round_id < self.total_round_count()
             and self.state["status"] == "running"
         ):
             next_round = round_id + 1
             threading.Thread(
-                target=self._start_round,
+                target=self._start_next_round,
                 args=(config, next_round),
                 daemon=True,
             ).start()
         elif (
-            not is_duplicate
+            should_advance
             and round_id >= self.total_round_count()
             and self.state["status"] == "running"
         ):
@@ -443,6 +481,13 @@ class ExperimentManager:
                 )
         return round_path
 
+    def _start_next_round(self, config: dict, round_id: int):
+        try:
+            self._start_round(config, round_id)
+        except Exception as error:
+            with self.lock:
+                self.state.update(status="failed", message=f"실험 실패: {error}")
+
     def _round_config(self, round_id: int, config: dict) -> dict:
         """라운드별 설정이 있으면 기본 설정 위에 덮어쓴다."""
         custom_rounds = config.get("round_configs", [])
@@ -454,7 +499,12 @@ class ExperimentManager:
                 if round_id == int(config.get("dlg_training_rounds", 5)) + 1
                 else "federated"
             )
+        if round_type == "dlg":
+            raise ValueError("실제 CNN의 DLG는 2번 담당자의 common.model 연결이 필요합니다.")
         return {
+            **TrainingSettings.from_dict({**config, **custom}).to_dict(),
+            "model_config": custom.get("model_config", config["model_config"]),
+            "round_timeout": custom.get("round_timeout", config["round_timeout"]),
             "participation_rate": custom.get(
                 "participation_rate", config["participation_rate"]
             ),
@@ -495,6 +545,10 @@ class ExperimentManager:
         round_config = dict(payload)
         round_config.setdefault("experiment_id", config["experiment_id"])
         round_config.setdefault("round", round_id)
+        if round_config["experiment_id"] != config["experiment_id"]:
+            raise ValueError("실험 ID 변경 후 설정을 먼저 저장하세요.")
+        if (self.results_dir / config["experiment_id"] / "rounds" / f"round_{round_id:03d}.json").exists():
+            raise RuntimeError("이미 저장된 라운드입니다. 새 실험 ID를 사용하세요.")
 
         inherited = self._round_config(round_id, config)
         round_config = {**inherited, **round_config}
@@ -525,6 +579,7 @@ class ExperimentManager:
         result = self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
             round_config,
+            timeout=float(round_config["round_timeout"]) + 120.0,
         )
         with self.lock:
             results = [

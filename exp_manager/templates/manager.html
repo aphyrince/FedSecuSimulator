@@ -7,56 +7,85 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css.css') }}" />
   </head>
   <body>
-    <h1>연합학습 보안 시뮬레이션 실험 관리자</h1>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">FedSecuSimulator</p>
+        <h1>실험 관리자</h1>
+      </div>
+      <div class="process-actions">
+        <button class="start" onclick="control('/api/start')">전체 프로세스 시작</button>
+        <button class="stop" onclick="control('/api/stop')">전체 프로세스 종료</button>
+        <button class="secondary" onclick="control('/api/shutdown')">실험 관리자 종료</button>
+      </div>
+    </header>
 
-    <div class="card">
-      <button class="start" onclick="control('/api/start')">전체 프로세스 시작</button>
-      <button class="stop" onclick="control('/api/stop')">전체 프로세스 종료</button>
-      <button onclick="control('/api/shutdown')">실험 관리자 종료</button>
-    </div>
+    <main>
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Configuration</p>
+            <h2>실험 설정 및 실행</h2>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>실험 ID<input id="experiment-id" /></label>
+          <label>라운드 수<input id="rounds" type="number" min="1" /></label>
+          <label>실험 유형
+            <select id="experiment-type">
+              <option value="federated">일반 연합학습</option>
+              <option value="dlg">DLG 실험 (정상 연합학습 후 공격)</option>
+            </select>
+          </label>
+          <label>참여율<input id="participation" type="number" min="0.01" max="1" step="0.05" /></label>
+          <label>시드<input id="seed" type="number" /></label>
+          <label>데이터 분포
+            <select id="distribution">
+              <option value="iid">IID</option>
+              <option value="non_iid">Non-IID</option>
+            </select>
+          </label>
+        </div>
 
-    <div class="card">
-      <h2>실험 설정 및 실행</h2>
-      <label>실험 ID <input id="experiment-id" /></label>
-      <label>라운드 수 <input id="rounds" type="number" min="1" /></label>
-      <label>실험 유형
-        <select id="experiment-type">
-          <option value="federated">일반 연합학습</option>
-          <option value="dlg">DLG 실험 (정상 연합학습 후 공격)</option>
-        </select>
-      </label>
-      <label>DLG 사전 정상 연합학습 라운드 수 <input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
-      <label>DLG 참가 클라이언트 (비워두면 자동 선정) <input id="dlg-client" type="number" min="0" max="9" /></label>
-      <label
-        >참여율 <input id="participation" type="number" min="0.01" max="1" step="0.05"
-      /></label>
-      <label>시드 <input id="seed" type="number" /></label>
-      <label
-        >데이터 분포
-        <select id="distribution">
-          <option value="iid">IID</option>
-          <option value="non_iid">Non-IID</option>
-        </select>
-      </label>
-      <label>라운드 유형
-        <select id="round-type">
-          <option value="federated">일반 연합학습</option>
-          <option value="dlg">DLG 공격</option>
-        </select>
-      </label>
-      <label>DLG 가우시안 노이즈 σ <input id="dlg-noise" type="number" min="0" step="0.01" value="0" /></label>
-      <label><input id="dlg-defense-enabled" type="checkbox" /> DLG 그래디언트 노이즈 방어 사용</label>
-      <label
-        >방어
-        <select id="defense">
-          <option value="none">없음</option>
-          <option value="norm_clipping">노름 클리핑</option>
-          <option value="coordinate_median">좌표별 중앙값</option>
-        </select>
-      </label>
-      <label><input id="defense-enabled" type="checkbox" /> 중앙 서버 방어 사용</label>
-      <label><input id="attack" type="checkbox" /> 내부자 협력 공격</label>
-      <label>악성 후보 (공격 ON 시 서버가 2개를 랜덤 선정) <input id="malicious" value="0,1" /></label>
+        <div id="dlg-settings" class="settings-panel">
+          <h3>DLG 설정</h3>
+          <div class="form-grid">
+            <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
+            <label>DLG 참가 클라이언트
+              <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
+            </label>
+          </div>
+          <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
+          <div id="dlg-noise-setting" class="conditional-setting">
+            <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="0.01" value="0" /></label>
+          </div>
+        </div>
+
+        <div class="settings-panel">
+          <h3>공격 및 서버 방어</h3>
+          <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
+          <div id="attack-settings" class="conditional-setting">
+            <label>악성 클라이언트 후보
+              <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
+              <small>공격 ON 시 후보 중 2개를 선정합니다.</small>
+            </label>
+          </div>
+          <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
+          <div id="defense-method-setting" class="conditional-setting">
+            <label>방어 방식
+              <select id="defense">
+                <option value="norm_clipping">노름 클리핑</option>
+                <option value="coordinate_median">좌표별 중앙값 집계</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <label class="compact-label">라운드 유형
+          <select id="round-type">
+            <option value="federated">일반 연합학습</option>
+            <option value="dlg">DLG 공격</option>
+          </select>
+        </label>
       <div class="experiment-actions">
         <button onclick="saveExperimentConfig()">설정 저장</button>
         <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
@@ -66,21 +95,22 @@
 
       <h3>라운드별 설정</h3>
       <button onclick="buildRoundEditor()">라운드 설정표 생성</button>
+      <div class="round-table-wrap">
       <table>
         <thead>
           <tr>
             <th>라운드</th>
             <th>참여율</th>
             <th>공격</th>
-            <th>악성 클라이언트</th>
             <th>지연 클라이언트</th>
-            <th>방어</th>
             <th>방어 사용</th>
+            <th>방어 방식</th>
             <th>단일 실행</th>
           </tr>
         </thead>
         <tbody id="round-configs"></tbody>
       </table>
+      </div>
 
       <div class="card">
         <h2>CIFAR-10 데이터 분배</h2>
@@ -91,7 +121,7 @@
       <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
       <p id="dlg-participant-status">DLG 참가 클라이언트: 없음</p>
       <pre id="experiment-log"></pre>
-    </div>
+      </section>
 
     <div class="card">
       <h2>중앙 서버</h2>
@@ -112,6 +142,7 @@
         <tbody id="clients"></tbody>
       </table>
     </div>
+    </main>
 
     <script>
       async function control(path) {
@@ -196,6 +227,7 @@
           null,
           2,
         );
+        updateRoundExecutionButtons(experiment.round_results || []);
       }
 
       async function refreshDataStatus() {
@@ -240,6 +272,60 @@
         document.getElementById('attack').checked = config.attack_enabled;
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
+        updateConditionalSettings();
+      }
+
+      function updateConditionalSettings() {
+        const dlgEnabled = document.getElementById('experiment-type').value === 'dlg';
+        document.getElementById('dlg-settings').hidden = !dlgEnabled;
+
+        const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
+        document.getElementById('dlg-noise-setting').hidden =
+          !dlgEnabled || !dlgDefenseEnabled;
+        document.getElementById('dlg-noise').disabled =
+          !dlgEnabled || !dlgDefenseEnabled;
+
+        const attackEnabled = document.getElementById('attack').checked;
+        document.getElementById('attack-settings').hidden = !attackEnabled;
+
+        const defenseEnabled = document.getElementById('defense-enabled').checked;
+        document.getElementById('defense-method-setting').hidden = !defenseEnabled;
+      }
+
+      function updateRoundVisibility(row) {
+        const attackEnabled = row.querySelector('.round-attack').checked;
+        const defenseEnabled = row.querySelector('.round-defense-enabled').checked;
+        const defenseToggle = row.querySelector('.round-defense-enabled');
+        const defenseMethod = row.querySelector('.round-defense');
+
+        defenseToggle.disabled = !attackEnabled;
+        defenseMethod.disabled = !attackEnabled || !defenseEnabled;
+
+        row.classList.toggle('non-attack-round', !attackEnabled);
+      }
+
+      function updateRoundExecutionButtons(roundResults = []) {
+        const executedRounds = new Set(
+          roundResults.map((result) => Number(result.round)).filter(Number.isInteger),
+        );
+        const rows = Array.from(document.querySelectorAll('#round-configs tr'));
+        const nextRound = rows.find((row) =>
+          !executedRounds.has(Number(row.dataset.round)),
+        );
+
+        rows.forEach((row) => {
+          const round = Number(row.dataset.round);
+          const button = row.querySelector('.round-execute-button');
+          const executed = executedRounds.has(round);
+          const current = nextRound === row;
+          button.disabled = executed || !current;
+          button.textContent = executed ? '실행됨' : current ? '실행' : '대기';
+          button.title = executed
+            ? `라운드 ${round}은(는) 이미 실행되었습니다.`
+            : current
+              ? `라운드 ${round} 실행`
+              : `이전 라운드 실행 후 활성화됩니다.`;
+        });
       }
 
       function buildRoundEditor(savedConfigs = []) {
@@ -250,46 +336,50 @@
         const count = Math.max(1, normalCount + (isDlgExperiment ? 1 : 0));
         const defaultParticipation = Number(document.getElementById('participation').value);
         const defaultAttack = document.getElementById('attack').checked;
-        const defaultMalicious = document.getElementById('malicious').value;
         const defaultDefense = document.getElementById('defense').value;
         document.getElementById('round-configs').innerHTML = Array.from(
           { length: count },
           (_, index) => {
             const round = index + 1;
             const saved = savedConfigs[index] || {};
+            const delayClients = saved.delay_clients || [];
             return `
               <tr data-round="${round}">
                 <td>${round}</td>
                 <td><input class="round-participation" type="number" min="0.01" max="1" step="0.05" value="${saved.participation_rate ?? defaultParticipation}"></td>
                 <td><input class="round-attack" type="checkbox" ${saved.attack_enabled ?? defaultAttack ? 'checked' : ''}></td>
-                <td><input class="round-malicious" value="${(saved.malicious_clients || defaultMalicious.split(',').map(Number)).join(',')}"></td>
-                <td><input class="round-delay" value="${(saved.delay_clients || []).join(',')}"></td>
+                <td>
+                  <div class="client-checkboxes">
+                    ${Array.from({ length: 10 }, (_, clientId) =>
+                      `<label title="클라이언트 ${clientId}">
+                        <input class="round-delay" type="checkbox" value="${clientId}" ${delayClients.includes(clientId) ? 'checked' : ''}>
+                        <span>${clientId}</span>
+                      </label>`
+                    ).join('')}
+                  </div>
+                </td>
+                <td>
+                  <input class="round-defense-enabled" type="checkbox" ${saved.defense_enabled !== undefined ? (saved.defense_enabled ? 'checked' : '') : (defaultDefense !== 'none' ? 'checked' : '')}>
+                </td>
                 <td>
                   <select class="round-defense">
-                    <option value="none" ${saved.defense === 'none' || (!saved.defense && defaultDefense === 'none') ? 'selected' : ''}>없음</option>
                     <option value="norm_clipping" ${saved.defense === 'norm_clipping' || (!saved.defense && defaultDefense === 'norm_clipping') ? 'selected' : ''}>노름 클리핑</option>
                     <option value="coordinate_median" ${saved.defense === 'coordinate_median' || (!saved.defense && defaultDefense === 'coordinate_median') ? 'selected' : ''}>좌표별 중앙값</option>
                   </select>
                 </td>
-                <td><input class="round-defense-enabled" type="checkbox" ${saved.defense_enabled !== undefined ? (saved.defense_enabled ? 'checked' : '') : (defaultDefense !== 'none' ? 'checked' : '')}></td>
-                <td><button onclick="executeSingleRound(${round})">실행</button></td>
+                <td><button class="round-execute-button" onclick="executeSingleRound(${round})">실행</button></td>
               </tr>`;
           },
         ).join('');
+        document.querySelectorAll('#round-configs tr').forEach(updateRoundVisibility);
       }
 
       function readRoundConfigs() {
         return Array.from(document.querySelectorAll('#round-configs tr')).map((row) => ({
           participation_rate: Number(row.querySelector('.round-participation').value),
           attack_enabled: row.querySelector('.round-attack').checked,
-          malicious_clients: row.querySelector('.round-malicious').value
-            .split(',')
-            .map((value) => Number(value.trim()))
-            .filter((value) => Number.isInteger(value)),
-          delay_clients: row.querySelector('.round-delay').value
-            .split(',')
-            .map((value) => Number(value.trim()))
-            .filter((value) => Number.isInteger(value)),
+          delay_clients: Array.from(row.querySelectorAll('.round-delay:checked'))
+            .map((checkbox) => Number(checkbox.value)),
           defense: row.querySelector('.round-defense').value,
           defense_enabled: row.querySelector('.round-defense-enabled').checked,
           round_type: document.getElementById('round-type').value,
@@ -309,14 +399,8 @@
             round: round,
             participation_rate: Number(row.querySelector('.round-participation').value),
             attack_enabled: row.querySelector('.round-attack').checked,
-            malicious_clients: row.querySelector('.round-malicious').value
-              .split(',')
-              .map((value) => Number(value.trim()))
-              .filter((value) => Number.isInteger(value)),
-            delay_clients: row.querySelector('.round-delay').value
-              .split(',')
-              .map((value) => Number(value.trim()))
-              .filter((value) => Number.isInteger(value)),
+            delay_clients: Array.from(row.querySelectorAll('.round-delay:checked'))
+              .map((checkbox) => Number(checkbox.value)),
             defense: row.querySelector('.round-defense').value,
             defense_enabled: row.querySelector('.round-defense-enabled').checked,
             round_type: document.getElementById('round-type').value,
@@ -331,8 +415,13 @@
       }
 
       loadExperimentConfig();
-      document.getElementById('dlg-defense-enabled').addEventListener('change', (event) => {
-        document.getElementById('dlg-noise').disabled = !event.target.checked;
+      document.getElementById('experiment-type').addEventListener('change', updateConditionalSettings);
+      document.getElementById('dlg-defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('attack').addEventListener('change', updateConditionalSettings);
+      document.getElementById('defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('round-configs').addEventListener('change', (event) => {
+        const row = event.target.closest('tr');
+        if (row) updateRoundVisibility(row);
       });
       refresh();
       refreshDataStatus();

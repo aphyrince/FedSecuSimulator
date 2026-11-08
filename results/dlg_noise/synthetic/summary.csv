@@ -1,0 +1,4 @@
+﻿image_id,model,seed,steps,noise_std,clean_gradient_l2,added_noise_l2,noise_to_gradient_ratio,gradient_match_loss_before,gradient_match_loss_after,mse_for_evaluation_only,true_label_for_evaluation_only,predicted_label
+synthetic-square,TinyDLGNet-linear,42,60,0.0,3.91541648,0.0,0.0,15.81469917,0.01178921,0.00016387,3,3
+synthetic-square,TinyDLGNet-linear,42,60,0.01,3.91541648,0.4351129,0.11112813,16.00727844,0.18984511,0.00024293,3,3
+synthetic-square,TinyDLGNet-linear,42,60,0.1,3.91541648,4.35112911,1.1112813,34.77959061,17.63011932,0.0077573,3,3

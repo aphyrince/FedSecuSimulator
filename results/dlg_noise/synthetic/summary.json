@@ -1,0 +1,47 @@
+[
+  {
+    "image_id": "synthetic-square",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 60,
+    "noise_std": 0.0,
+    "clean_gradient_l2": 3.91541648,
+    "added_noise_l2": 0.0,
+    "noise_to_gradient_ratio": 0.0,
+    "gradient_match_loss_before": 15.81469917,
+    "gradient_match_loss_after": 0.01178921,
+    "mse_for_evaluation_only": 0.00016387,
+    "true_label_for_evaluation_only": 3,
+    "predicted_label": 3
+  },
+  {
+    "image_id": "synthetic-square",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 60,
+    "noise_std": 0.01,
+    "clean_gradient_l2": 3.91541648,
+    "added_noise_l2": 0.4351129,
+    "noise_to_gradient_ratio": 0.11112813,
+    "gradient_match_loss_before": 16.00727844,
+    "gradient_match_loss_after": 0.18984511,
+    "mse_for_evaluation_only": 0.00024293,
+    "true_label_for_evaluation_only": 3,
+    "predicted_label": 3
+  },
+  {
+    "image_id": "synthetic-square",
+    "model": "TinyDLGNet-linear",
+    "seed": 42,
+    "steps": 60,
+    "noise_std": 0.1,
+    "clean_gradient_l2": 3.91541648,
+    "added_noise_l2": 4.35112911,
+    "noise_to_gradient_ratio": 1.1112813,
+    "gradient_match_loss_before": 34.77959061,
+    "gradient_match_loss_after": 17.63011932,
+    "mse_for_evaluation_only": 0.0077573,
+    "true_label_for_evaluation_only": 3,
+    "predicted_label": 3
+  }
+]

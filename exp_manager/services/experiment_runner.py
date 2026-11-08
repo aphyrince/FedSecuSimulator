@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services.experiment_output import save_experiment_outputs
+from services.experiment_output import save_experiment_outputs, save_round_result
 from services.rest_client import RestClient
 
 
@@ -18,6 +18,7 @@ class ExperimentManager:
         self.worker = None
         self.stop_event = threading.Event()
         self.rest_client = RestClient()
+        self.processed_rounds = set()
         self.config = {
             "experiment_id": f"fedsec-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             "experiment_type": "federated",
@@ -102,6 +103,7 @@ class ExperimentManager:
                 raise RuntimeError("중앙 서버가 실행 중이어야 합니다.")
             self.process_manager.sync_client_registry()
             self.stop_event.clear()
+            self.processed_rounds.clear()
             self.state.update(
                 status="running",
                 current_round=0,
@@ -136,50 +138,83 @@ class ExperimentManager:
                 chart_path=None,
                 message="실험 상태를 초기화했습니다.",
             )
+            self.processed_rounds.clear()
         return self.status()
 
     def _run(self):
         config = self.get_config()
-        rng = random.Random(config["seed"])
         round_results = []
-        selected_count = max(1, round(self.client_count * config["participation_rate"]))
         try:
-            for round_id in range(1, config["num_rounds"] + 1):
-                if self.stop_event.is_set():
-                    break
-                round_config = self._round_config(round_id, config)
-                round_config = {
-                    **round_config,
-                    "experiment_id": config["experiment_id"],
-                    "round": round_id,
-                    "seed": config["seed"],
-                    "nums_clients": self.client_count,
-                }
-                round_config.setdefault(
-                    "experiment_manager_url", self.process_manager.manager_url()
-                )
-                self.rest_client.post_json(
-                    f"{self.process_manager.server_url()}/api/round/config",
-                    round_config,
-                )
-                result = self.rest_client.post_json(
-                    f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
-                    round_config,
-                )
-                round_results.append(result)
-                with self.lock:
-                    self.state["current_round"] = round_id
-                    self.state["round_results"] = round_results.copy()
-                time.sleep(0.08)
-
             if self.stop_event.is_set():
                 with self.lock:
                     self.state["status"] = "stopped"
                     self.state["message"] = "실험이 중단되었습니다."
                 return
+            self._start_round(config, 1)
+        except Exception as exc:
+            with self.lock:
+                self.state["status"] = "failed"
+                self.state["message"] = f"실험 실패: {exc}"
 
+    def _start_round(self, config: dict, round_id: int):
+        """라운드 설정을 중앙 서버에 전달하고 개별 라운드 시작 API를 호출한다."""
+        if self.stop_event.is_set():
+            return
+        round_config = {
+            **self._round_config(round_id, config),
+            "experiment_id": config["experiment_id"],
+            "round": round_id,
+            "seed": config["seed"],
+            "nums_clients": self.client_count,
+            "experiment_manager_url": self.process_manager.manager_url(),
+        }
+        self.rest_client.post_json(
+            f"{self.process_manager.server_url()}/api/round/config",
+            round_config,
+        )
+        result = self.rest_client.post_json(
+            f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
+            round_config,
+        )
+        if result.get("round") == round_id:
+            self.record_round_result(result)
+
+    def record_round_result(self, result: dict) -> Path:
+        """라운드 결과를 상태와 JSON 파일에 기록하고 예약된 다음 라운드를 시작한다."""
+        round_id = int(result["round"])
+        config = self.get_config()
+        round_path = save_round_result(self.results_dir, config, result)
+
+        with self.lock:
+            is_duplicate = round_id in self.processed_rounds
+            self.processed_rounds.add(round_id)
+            results = [
+                item for item in self.state["round_results"]
+                if item.get("round") != round_id
+            ]
+            results.append(result)
+            results.sort(key=lambda item: item["round"])
+            self.state["round_results"] = results
+            self.state["current_round"] = round_id
+
+        if (
+            not is_duplicate
+            and round_id < config["num_rounds"]
+            and self.state["status"] == "running"
+        ):
+            next_round = round_id + 1
+            threading.Thread(
+                target=self._start_round,
+                args=(config, next_round),
+                daemon=True,
+            ).start()
+        elif (
+            not is_duplicate
+            and round_id >= config["num_rounds"]
+            and self.state["status"] == "running"
+        ):
             log_path, result_path, chart_path = save_experiment_outputs(
-                self.results_dir, config, round_results
+                self.results_dir, config, self.state["round_results"]
             )
             with self.lock:
                 self.state.update(
@@ -189,10 +224,7 @@ class ExperimentManager:
                     chart_path=str(chart_path),
                     message="실험이 완료되었습니다.",
                 )
-        except Exception as exc:
-            with self.lock:
-                self.state["status"] = "failed"
-                self.state["message"] = f"실험 실패: {exc}"
+        return round_path
 
     def _round_config(self, round_id: int, config: dict) -> dict:
         """라운드별 설정이 있으면 기본 설정 위에 덮어쓴다."""

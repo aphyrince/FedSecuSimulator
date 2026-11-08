@@ -66,13 +66,9 @@ def receive_round_result():
     if round_id < 1:
         return jsonify(error="Round number must be positive"), 400
     manager = current_app.extensions["experiment_manager"]
-    with manager.lock:
-        results = [
-            item for item in manager.state["round_results"]
-            if item.get("round") != round_id
-        ]
-        results.append(result)
-        results.sort(key=lambda item: item["round"])
-        manager.state["round_results"] = results
-        manager.state["current_round"] = round_id
-    return jsonify(status="received", round=round_id)
+    round_path = manager.record_round_result(result)
+    return jsonify(
+        status="received",
+        round=round_id,
+        recorded_file=str(round_path),
+    )

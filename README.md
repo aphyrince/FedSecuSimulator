@@ -281,3 +281,13 @@ def evaluate_global_model(
 
 실험 관리자 설정의 `experiment_manager_url`을 중앙 서버로 전달하면 자동 콜백됩니다.
 실험 관리자 프로세스가 설정한 호스트와 포트를 사용해 자동 설정되며, 기본값은 `http://127.0.0.1:8000`입니다.
+
+## 라운드 결과 파일 기록
+
+실험 관리자는 라운드 결과 수신 즉시 다음 위치에 JSON 파일을 기록합니다.
+
+`results/<experiment_id>/rounds/round_<번호>.json`
+
+전체 실험 실행 중 다음 라운드가 예약되어 있으면 수신 API가 중앙 서버의
+`POST /api/rounds/<round_id>/start` 호출을 순차적으로 시작합니다. 마지막 라운드가
+완료되면 기존 `results.json`, `rounds.csv`, 정확도 그래프도 생성됩니다.

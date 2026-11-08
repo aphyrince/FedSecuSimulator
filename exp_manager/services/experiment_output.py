@@ -21,6 +21,19 @@ ROUND_LOG_FIELDS = [
 ]
 
 
+def save_round_result(results_dir: Path, config: dict, result: dict) -> Path:
+    """단일 라운드 결과를 실험 폴더의 JSON 파일로 즉시 기록한다."""
+    experiment_dir = results_dir / config["experiment_id"]
+    rounds_dir = experiment_dir / "rounds"
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    round_path = rounds_dir / f"round_{int(result['round']):03d}.json"
+    round_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return round_path
+
+
 def save_experiment_outputs(
     results_dir: Path, config: dict, round_results: list[dict]
 ):

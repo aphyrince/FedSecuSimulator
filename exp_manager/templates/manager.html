@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FedSecuSimulator 실험 관리자</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css.css') }}" />
+  </head>
+  <body>
+    <h1>연합학습 보안 시뮬레이션 실험 관리자</h1>
+
+    <div class="card">
+      <button class="start" onclick="control('/api/start')">전체 프로세스 시작</button>
+      <button class="stop" onclick="control('/api/stop')">전체 프로세스 종료</button>
+      <button onclick="control('/api/shutdown')">실험 관리자 종료</button>
+    </div>
+
+    <div class="card">
+      <h2>실험 설정 및 실행</h2>
+      <label>실험 ID <input id="experiment-id" /></label>
+      <label>라운드 수 <input id="rounds" type="number" min="1" /></label>
+      <label
+        >참여율 <input id="participation" type="number" min="0.01" max="1" step="0.05"
+      /></label>
+      <label>시드 <input id="seed" type="number" /></label>
+      <label
+        >데이터 분포
+        <select id="distribution">
+          <option value="iid">IID</option>
+          <option value="non_iid">Non-IID</option>
+        </select>
+      </label>
+      <label
+        >방어
+        <select id="defense">
+          <option value="none">없음</option>
+          <option value="norm_clipping">노름 클리핑</option>
+          <option value="coordinate_median">좌표별 중앙값</option>
+        </select>
+      </label>
+      <label><input id="attack" type="checkbox" /> 내부자 협력 공격</label>
+      <label>악성 클라이언트 <input id="malicious" value="0,1" /></label>
+      <div class="experiment-actions">
+        <button onclick="saveExperimentConfig()">설정 저장</button>
+        <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
+        <button class="stop" onclick="control('/api/experiment/stop')">실험 중단</button>
+        <button onclick="control('/api/experiment/reset')">상태 초기화</button>
+      </div>
+
+      <h3>라운드별 설정</h3>
+      <button onclick="buildRoundEditor()">라운드 설정표 생성</button>
+      <table>
+        <thead>
+          <tr>
+            <th>라운드</th>
+            <th>참여율</th>
+            <th>공격</th>
+            <th>악성 클라이언트</th>
+            <th>지연 클라이언트</th>
+            <th>방어</th>
+            <th>단일 실행</th>
+          </tr>
+        </thead>
+        <tbody id="round-configs"></tbody>
+      </table>
+
+      <div class="card">
+        <h2>CIFAR-10 데이터 분배</h2>
+        <button onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
+        <p id="data-status">확인 중...</p>
+      </div>
+      <p id="experiment-status">확인 중...</p>
+      <pre id="experiment-log"></pre>
+    </div>
+
+    <div class="card">
+      <h2>중앙 서버</h2>
+      <p id="server-status">확인 중...</p>
+    </div>
+
+    <div class="card">
+      <h2>클라이언트</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>주소</th>
+            <th>프로세스</th>
+            <th>API 응답</th>
+          </tr>
+        </thead>
+        <tbody id="clients"></tbody>
+      </table>
+    </div>
+
+    <script>
+      async function control(path) {
+        await fetch(path, { method: 'POST' });
+        await refresh();
+      }
+
+      async function saveExperimentConfig() {
+        const response = await fetch('/api/experiment/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            experiment_id: document.getElementById('experiment-id').value,
+            num_rounds: Number(document.getElementById('rounds').value),
+            participation_rate: Number(document.getElementById('participation').value),
+            seed: Number(document.getElementById('seed').value),
+            data_distribution: document.getElementById('distribution').value,
+            defense: document.getElementById('defense').value,
+            attack_enabled: document.getElementById('attack').checked,
+            malicious_clients: document
+              .getElementById('malicious')
+              .value.split(',')
+              .map((value) => Number(value.trim()))
+              .filter((value) => Number.isInteger(value)),
+            round_configs: readRoundConfigs(),
+          }),
+        });
+        if (!response.ok) {
+          alert((await response.json()).error);
+        }
+        await refresh();
+      }
+
+      function stateText(value) {
+        return value ? '<span class="ok">정상</span>' : '<span class="off">종료됨</span>';
+      }
+
+      async function refresh() {
+        const response = await fetch('/api/status');
+        const data = await response.json();
+        document.getElementById('server-status').innerHTML =
+          `${data.server.url} · 프로세스: ${stateText(data.server.running)} · API: ${stateText(data.server.reachable)}`;
+        document.getElementById('clients').innerHTML = data.clients
+          .map(
+            (client) => `
+        <tr>
+          <td>${client.client_id}</td>
+          <td><a href="${client.url}/health" target="_blank">${client.url}</a></td>
+          <td>${stateText(client.running)}</td>
+          <td>${stateText(client.reachable)}</td>
+        </tr>
+      `,
+          )
+          .join('');
+
+        const experimentResponse = await fetch('/api/experiment/status');
+        const experiment = await experimentResponse.json();
+        document.getElementById('experiment-status').textContent =
+          `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.config.num_rounds} · ${experiment.message}`;
+        document.getElementById('experiment-log').textContent = JSON.stringify(
+          experiment.round_results.slice(-5),
+          null,
+          2,
+        );
+      }
+
+      async function refreshDataStatus() {
+        const response = await fetch('/api/data/status');
+        const data = await response.json();
+        document.getElementById('data-status').textContent =
+          `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+      }
+
+      async function distributeData() {
+        const response = await fetch('/api/data/distribute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seed: 42 }),
+        });
+        if (!response.ok) {
+          alert((await response.json()).error);
+        }
+        await refreshDataStatus();
+      }
+
+      async function loadExperimentConfig() {
+        const response = await fetch('/api/experiment/config');
+        const config = await response.json();
+        document.getElementById('experiment-id').value = config.experiment_id;
+        document.getElementById('rounds').value = config.num_rounds;
+        document.getElementById('participation').value = config.participation_rate;
+        document.getElementById('seed').value = config.seed;
+        document.getElementById('distribution').value = config.data_distribution;
+        document.getElementById('defense').value = config.defense;
+        document.getElementById('attack').checked = config.attack_enabled;
+        document.getElementById('malicious').value = config.malicious_clients.join(',');
+        buildRoundEditor(config.round_configs || []);
+      }
+
+      function buildRoundEditor(savedConfigs = []) {
+        const count = Math.max(1, Number(document.getElementById('rounds').value) || 1);
+        const defaultParticipation = Number(document.getElementById('participation').value);
+        const defaultAttack = document.getElementById('attack').checked;
+        const defaultMalicious = document.getElementById('malicious').value;
+        const defaultDefense = document.getElementById('defense').value;
+        document.getElementById('round-configs').innerHTML = Array.from(
+          { length: count },
+          (_, index) => {
+            const round = index + 1;
+            const saved = savedConfigs[index] || {};
+            return `
+              <tr data-round="${round}">
+                <td>${round}</td>
+                <td><input class="round-participation" type="number" min="0.01" max="1" step="0.05" value="${saved.participation_rate ?? defaultParticipation}"></td>
+                <td><input class="round-attack" type="checkbox" ${saved.attack_enabled ?? defaultAttack ? 'checked' : ''}></td>
+                <td><input class="round-malicious" value="${(saved.malicious_clients || defaultMalicious.split(',').map(Number)).join(',')}"></td>
+                <td><input class="round-delay" value="${(saved.delay_clients || []).join(',')}"></td>
+                <td>
+                  <select class="round-defense">
+                    <option value="none" ${saved.defense === 'none' || (!saved.defense && defaultDefense === 'none') ? 'selected' : ''}>없음</option>
+                    <option value="norm_clipping" ${saved.defense === 'norm_clipping' || (!saved.defense && defaultDefense === 'norm_clipping') ? 'selected' : ''}>노름 클리핑</option>
+                    <option value="coordinate_median" ${saved.defense === 'coordinate_median' || (!saved.defense && defaultDefense === 'coordinate_median') ? 'selected' : ''}>좌표별 중앙값</option>
+                  </select>
+                </td>
+                <td><button onclick="executeSingleRound(${round})">실행</button></td>
+              </tr>`;
+          },
+        ).join('');
+      }
+
+      function readRoundConfigs() {
+        return Array.from(document.querySelectorAll('#round-configs tr')).map((row) => ({
+          participation_rate: Number(row.querySelector('.round-participation').value),
+          attack_enabled: row.querySelector('.round-attack').checked,
+          malicious_clients: row.querySelector('.round-malicious').value
+            .split(',')
+            .map((value) => Number(value.trim()))
+            .filter((value) => Number.isInteger(value)),
+          delay_clients: row.querySelector('.round-delay').value
+            .split(',')
+            .map((value) => Number(value.trim()))
+            .filter((value) => Number.isInteger(value)),
+          defense: row.querySelector('.round-defense').value,
+        }));
+      }
+
+      async function executeSingleRound(round) {
+        await saveExperimentConfig();
+        const row = document.querySelector(`#round-configs tr[data-round="${round}"]`);
+        const response = await fetch(`/api/rounds/${round}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            experiment_id: document.getElementById('experiment-id').value,
+            round: round,
+            participation_rate: Number(row.querySelector('.round-participation').value),
+            attack_enabled: row.querySelector('.round-attack').checked,
+            malicious_clients: row.querySelector('.round-malicious').value
+              .split(',')
+              .map((value) => Number(value.trim()))
+              .filter((value) => Number.isInteger(value)),
+            delay_clients: row.querySelector('.round-delay').value
+              .split(',')
+              .map((value) => Number(value.trim()))
+              .filter((value) => Number.isInteger(value)),
+            defense: row.querySelector('.round-defense').value,
+          }),
+        });
+        if (!response.ok) {
+          alert((await response.json()).error);
+        }
+        await refresh();
+      }
+
+      loadExperimentConfig();
+      refresh();
+      refreshDataStatus();
+      setInterval(() => {
+        if (!document.hidden) refresh();
+      }, 3000);
+    </script>
+  </body>
+</html>

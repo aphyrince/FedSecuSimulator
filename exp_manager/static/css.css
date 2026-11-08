@@ -1,0 +1,72 @@
+:root {
+    color-scheme: light;
+    font-family: system-ui, sans-serif;
+}
+body {
+    max-width: 980px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background: #f5f7fb;
+    color: #172033;
+}
+.card {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 16px #dce2ed;
+}
+button {
+    border: 0;
+    border-radius: 7px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: 700;
+    margin-right: 8px;
+}
+.experiment-actions {
+  margin: 16px 0;
+}
+label {
+  display: inline-block;
+  margin: 8px 12px 8px 0;
+}
+input,
+select {
+  margin-left: 6px;
+  padding: 6px;
+}
+pre {
+  max-height: 260px;
+  overflow: auto;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 12px;
+  border-radius: 8px;
+}
+.start {
+    background: #2563eb;
+    color: white;
+}
+.stop {
+    background: #dc2626;
+    color: white;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+th,
+td {
+    text-align: left;
+    padding: 10px;
+    border-bottom: 1px solid #e5e7eb;
+}
+.ok {
+    color: #15803d;
+    font-weight: 700;
+}
+.off {
+    color: #b91c1c;
+    font-weight: 700;
+}

@@ -128,3 +128,32 @@ def train_local_model(
 - `GET /api/training/status`: 최신 로컬 학습 상태와 결과를 조회합니다.
 - `GET /api/training/history`: 라운드별 로컬 학습 기록을 조회합니다.
 - `POST /api/round/execute`: 저장된 최신 로컬 학습 결과를 업데이트로 반환합니다.
+
+## 학습 전후 업데이트 추출
+
+시나리오 11의 전역 모델 업데이트 추출은
+[clients/services/local_training.py](clients/services/local_training.py)의 `extract_model_update()`가 담당합니다.
+
+```python
+def extract_model_update(
+    global_model_before_training: dict,
+    local_model_after_training: dict,
+) -> dict:
+    ...
+```
+
+함수는 학습 전후 모델에서 변경된 값을 추출하고 다음 형태로 반환해야 합니다.
+
+```python
+{
+    "values": {},       # 파라미터별 학습 전후 차이
+    "update_norm": 0.0, # 추출된 업데이트의 L2 norm
+}
+```
+
+현재 기본 구현은 JSON 모델의 `weights`를 숫자 리스트·딕셔너리로 계산합니다. Tensor/PyTorch 모델로 교체할 때는
+이 함수만 Tensor 차이를 계산하고 JSON 직렬화 가능한 형태 또는 Base64 payload로 변환하도록 변경하면 됩니다.
+
+- `GET /api/updates/extracted/<round_id>`: 라운드별 추출 업데이트 조회
+- 추출 업데이트는 로컬 학습 기록과 함께 저장됩니다.
+- `POST /api/round/execute`의 `update.values` 및 `update.update_norm`에 반영됩니다.

@@ -22,7 +22,7 @@ def status():
     return jsonify(
         client_id=current_app.config["CLIENT_ID"],
         port=current_app.config["PORT"],
-        available=True,
+        available=current_app.extensions["client_state"].available,
         status="running",
     )
 
@@ -31,7 +31,7 @@ def status():
 def availability():
     """현재 라운드 참여 가능 여부를 중앙 서버의 질의에 응답한다."""
     app = current_app._get_current_object()
-    available = app.extensions.get("available", True)
+    available = app.extensions["client_state"].available
     payload = request.get_json(silent=True) or {}
     return jsonify(
         client_id=app.config["CLIENT_ID"],

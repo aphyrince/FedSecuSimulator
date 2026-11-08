@@ -6,6 +6,7 @@ from flask import Flask
 from werkzeug.serving import make_server
 
 from routes.api import api_bp
+from services.client_state import ClientState
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -18,13 +19,7 @@ def create_app(client_id: int, port: int):
     app.config["CLIENT_ID"] = client_id
     app.config["PORT"] = port
     app.extensions["server"] = None
-    app.extensions["experiment_config"] = {}
-    app.extensions["dataset_range"] = {}
-    app.extensions["available"] = True
-    app.extensions["global_models"] = []
-    app.extensions["global_model"] = {}
-    app.extensions["local_training_results"] = []
-    app.extensions["latest_local_training"] = {}
+    app.extensions["client_state"] = ClientState()
     app.register_blueprint(api_bp)
     return app
 

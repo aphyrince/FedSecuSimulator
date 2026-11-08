@@ -1,12 +1,120 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import random
+import threading
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from flask import Blueprint, current_app, jsonify, request
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
+
+
+@aggregation_bp.post("/api/rounds/<int:round_id>/updates")
+def receive_client_update(round_id: int):
+    """클라이언트가 제출한 라운드 업데이트를 검증해 라운드별로 저장한다."""
+    payload = request.get_json(silent=True) or {}
+    if payload.get("round", round_id) != round_id:
+        return jsonify(error="Round number mismatch"), 400
+    client_id = payload.get("client_id")
+    if client_id is None or not payload.get("valid", False):
+        return jsonify(error="Invalid client update"), 400
+    selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
+    if int(client_id) not in selected:
+        return jsonify(error="Client was not selected for this round"), 403
+    num_samples = payload.get("num_samples")
+    if not isinstance(num_samples, (int, float)) or num_samples < 0:
+        return jsonify(error="num_samples must be a non-negative number"), 400
+    if "update" not in payload or not isinstance(payload["update"], dict):
+        return jsonify(error="Invalid update payload"), 400
+
+    updates = current_app.extensions.setdefault("round_updates", {})
+    round_updates = updates.setdefault(round_id, {})
+    round_updates[int(client_id)] = payload
+    statuses = current_app.extensions.setdefault("update_submission_status", {})
+    round_status = statuses.setdefault(round_id, {})
+    round_status[int(client_id)] = {
+        "status": "received",
+        "num_samples": num_samples,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return jsonify(
+        status="received",
+        round=round_id,
+        client_id=int(client_id),
+        count=len(round_updates),
+    )
+
+
+@aggregation_bp.get("/api/rounds/<int:round_id>/updates")
+def get_client_updates(round_id: int):
+    """라운드별로 수신된 클라이언트 업데이트 목록을 반환한다."""
+    updates = current_app.extensions.get("round_updates", {}).get(round_id, {})
+    return jsonify(
+        round=round_id,
+        count=len(updates),
+        updates=[updates[client_id] for client_id in sorted(updates)],
+    )
+
+
+@aggregation_bp.get("/api/rounds/<int:round_id>/updates/status")
+def get_update_submission_status(round_id: int):
+    """선정 클라이언트의 제출, 미제출, 기한 초과 상태를 반환한다."""
+    selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
+    received = current_app.extensions.get("round_updates", {}).get(round_id, {})
+    tracked = current_app.extensions.get("update_submission_status", {}).get(round_id, {})
+    submitted = sorted(received)
+    missing = sorted(set(selected) - set(received))
+    expired = sorted(
+        client_id
+        for client_id, status in tracked.items()
+        if status.get("status") == "expired"
+    )
+    return jsonify(
+        round=round_id,
+        selected_clients=selected,
+        submitted_clients=submitted,
+        missing_clients=missing,
+        expired_clients=expired,
+        updates=received,
+        status=tracked,
+    )
+
+
+@aggregation_bp.post("/api/rounds/<int:round_id>/timeout")
+def notify_update_timeout(round_id: int):
+    """기한 초과 클라이언트에 타임아웃을 알리고 미제출 상태를 저장한다."""
+    selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
+    received = current_app.extensions.get("round_updates", {}).get(round_id, {})
+    missing = sorted(set(selected) - set(received))
+    registered = current_app.extensions.get("clients", {})
+    statuses = current_app.extensions.setdefault("update_submission_status", {})
+    round_status = statuses.setdefault(round_id, {})
+    notified = []
+
+    for client_id in missing:
+        round_status.setdefault(client_id, {})["status"] = "expired"
+        round_status[client_id]["expired_at"] = datetime.now(timezone.utc).isoformat()
+        client = registered.get(client_id)
+        if client:
+            try:
+                _post_json(
+                    f"{client['url']}/api/round/timeout",
+                    {"round": round_id},
+                    timeout=1.0,
+                )
+                notified.append(client_id)
+            except (OSError, ValueError, URLError):
+                current_app.logger.warning(
+                    "Timeout notification failed: client_id=%s", client_id
+                )
+
+    return jsonify(
+        round=round_id,
+        expired_clients=missing,
+        notified_clients=notified,
+    )
 
 
 def _post_json(url: str, payload: dict, timeout: float = 3.0):
@@ -133,6 +241,10 @@ def start_round(round_id: int):
     if not available_clients:
         return jsonify(error="No available clients"), 409
 
+    # 이전 라운드 제출이 재사용되지 않도록 시작 시 해당 라운드 업데이트를 초기화한다.
+    current_app.extensions.setdefault("round_updates", {})[round_id] = {}
+    current_app.extensions.setdefault("update_submission_status", {})[round_id] = {}
+
     seed = config.get("seed", 42)
     participation = config.get("participation_rate", 0.5)
     nums_clients = config.get("nums_clients", len(registered))
@@ -142,6 +254,51 @@ def start_round(round_id: int):
     selected_clients = [available_clients[index] for index in selected]
     selected_ids = [client["client_id"] for client in selected_clients]
     current_app.extensions["selected_clients"][round_id] = selected_ids
+    current_app.extensions["update_submission_status"][round_id] = {
+        client_id: {"status": "waiting"}
+        for client_id in selected_ids
+    }
+
+    timeout_seconds = float(
+        config.get("round_timeout", config.get("update_timeout", 60.0))
+    )
+    app = current_app._get_current_object()
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=max(0, timeout_seconds))
+    current_app.extensions.setdefault("update_deadlines", {})[round_id] = (
+        deadline.isoformat()
+    )
+
+    def notify_expired() -> None:
+        from flask import current_app as flask_current_app
+
+        with app.app_context():
+            flask_current_app.extensions.setdefault("update_submission_status", {})[
+                round_id
+            ]
+            selected = flask_current_app.extensions["selected_clients"].get(round_id, [])
+            received = flask_current_app.extensions["round_updates"].get(round_id, {})
+            for client_id in sorted(set(selected) - set(received)):
+                status = flask_current_app.extensions[
+                    "update_submission_status"
+                ][round_id]
+                status.setdefault(client_id, {})["status"] = "expired"
+                status[client_id]["expired_at"] = datetime.now(timezone.utc).isoformat()
+                client = flask_current_app.extensions["clients"].get(client_id)
+                if client:
+                    try:
+                        _post_json(
+                            f"{client['url']}/api/round/timeout",
+                            {"round": round_id},
+                            timeout=1.0,
+                        )
+                    except (OSError, ValueError, URLError):
+                        app.logger.warning(
+                            "Timeout notification failed: client_id=%s", client_id
+                        )
+
+    timer = threading.Timer(timeout_seconds, notify_expired)
+    timer.daemon = True
+    timer.start()
 
     global_model = current_app.extensions.get("global_model")
     if global_model is None:
@@ -168,17 +325,23 @@ def start_round(round_id: int):
         try:
             updates.append(
                 _post_json(
-                    f"{client['url']}/api/round/execute",
+                    f"{client['url']}/api/round/submit",
                     {
                         "round": round_id,
                         "malicious": client["client_id"] in malicious_ids,
                         "attack_enabled": config.get("attack_enabled", False),
+                        "server_url": config.get(
+                            "server_url",
+                            f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+                        ),
                     },
                 )
             )
         except (OSError, ValueError):
             current_app.logger.warning("Client update failed: client_id=%s", client["client_id"])
 
+    received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
+    updates = list(received_response.values())
     if not updates:
         return jsonify(error="No client updates received"), 409
 

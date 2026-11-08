@@ -15,6 +15,8 @@ class ClientState:
         self.local_training_results: list[dict[str, Any]] = []
         self.latest_local_training: dict[str, Any] = {}
         self.extracted_updates: dict[int, dict[str, Any]] = {}
+        self.submitted_updates: dict[int, dict[str, Any]] = {}
+        self.expired_rounds: set[int] = set()
 
     def set_experiment_config(self, config: dict[str, Any]) -> dict[str, Any]:
         self.experiment_config = config
@@ -36,3 +38,6 @@ class ClientState:
         extracted_update = training_record.get("extracted_update")
         if isinstance(extracted_update, dict):
             self.extracted_updates[round_id] = extracted_update
+
+    def save_submission(self, round_id: int, submission: dict[str, Any]) -> None:
+        self.submitted_updates[round_id] = submission

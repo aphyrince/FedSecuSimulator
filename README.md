@@ -157,3 +157,38 @@ def extract_model_update(
 - `GET /api/updates/extracted/<round_id>`: 라운드별 추출 업데이트 조회
 - 추출 업데이트는 로컬 학습 기록과 함께 저장됩니다.
 - `POST /api/round/execute`의 `update.values` 및 `update.update_norm`에 반영됩니다.
+
+## 클라이언트 업데이트 제출
+
+시나리오 12에서는 추출된 로컬 업데이트가 클라이언트에서 중앙 서버로 직접 제출됩니다.
+
+- 클라이언트: `POST /api/round/submit`
+- 중앙 서버: `POST /api/rounds/<round_id>/updates`
+- 중앙 서버 조회: `GET /api/rounds/<round_id>/updates`
+- 클라이언트 제출 확인: `GET /api/updates/submitted/<round_id>`
+
+예시:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:5101/api/round/submit `
+  -ContentType application/json `
+  -Body '{"round":1,"malicious":false}'
+```
+
+## 업데이트 수신 및 유효성 검사
+
+중앙 서버는 제출된 업데이트가 아래 조건을 만족하는지 확인합니다.
+
+- 제출 라운드가 요청한 라운드와 일치
+- 클라이언트가 해당 라운드에 선정됨
+- `valid`가 `true`
+- `num_samples`가 음수가 아닌 숫자
+- `update` 객체가 존재
+
+API 조회:
+
+- `GET /api/rounds/<round_id>/updates/status`: 제출·미제출·기한 초과 클라이언트 확인
+- `POST /api/rounds/<round_id>/timeout`: 기한 초과 처리 및 미제출 클라이언트 알림
+
+라운드 설정의 `round_timeout` 또는 `update_timeout`(초)로 제출 기한을 설정할 수 있습니다.

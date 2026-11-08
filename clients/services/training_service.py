@@ -60,6 +60,7 @@ def build_round_update(
         "client_id": client_id,
         "malicious": malicious,
         "valid": True,
+        "num_samples": training.get("num_samples", 0) if has_round_training else 0,
         "update": {
             "model_delta": -3.5 if attacked else model_delta,
             "scale": -5.0 if attacked else 1.0,

@@ -36,6 +36,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     flask_app = create_app(args.client_id, args.port)
+    flask_app.config["SERVER_URL"] = args.server_url.rstrip("/")
     http_server = make_server(args.host, args.port, flask_app, threaded=True)
     flask_app.extensions["server"] = http_server
 

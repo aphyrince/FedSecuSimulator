@@ -25,6 +25,8 @@ def create_app(host: str, port: int):
     app.extensions["available_clients"] = {}
     app.extensions["availability_responses"] = {}
     app.extensions["selected_clients"] = {}
+    app.extensions["round_updates"] = {}
+    app.extensions["update_submission_status"] = {}
     app.extensions["global_model"] = None
 
     app.register_blueprint(api_bp)

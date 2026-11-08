@@ -46,3 +46,18 @@ def shutdown():
     app = current_app._get_current_object()
     schedule_shutdown(app, app.config["CLIENT_ID"])
     return jsonify(message="Shutdown scheduled", client_id=app.config["CLIENT_ID"])
+
+
+@system_bp.post("/api/round/timeout")
+def round_timeout():
+    """중앙 서버가 설정된 제출 기한을 초과했음을 알린다."""
+    payload = request.get_json(silent=True) or {}
+    app = current_app._get_current_object()
+    app.extensions["client_state"].expired_rounds = (
+        app.extensions["client_state"].expired_rounds | {int(payload.get("round", 0))}
+    )
+    return jsonify(
+        status="expired",
+        client_id=app.config["CLIENT_ID"],
+        round=payload.get("round"),
+    )

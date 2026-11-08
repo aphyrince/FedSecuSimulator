@@ -1,6 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 
 from services.training_service import build_round_update, run_local_training
+from services.server_client import post_json
 
 experiment_bp = Blueprint("client_experiment", __name__)
 
@@ -61,6 +62,31 @@ def execute_round():
     return jsonify(update)
 
 
+@experiment_bp.post("/api/round/submit")
+def submit_round_update():
+    """추출한 로컬 업데이트를 중앙 서버에 직접 제출한다."""
+    payload = request.get_json(silent=True) or {}
+    round_id = int(payload.get("round", 1))
+    state = current_app.extensions["client_state"]
+    update = build_round_update(
+        state=state,
+        client_id=current_app.config["CLIENT_ID"],
+        request_payload=payload,
+    )
+    server_url = payload.get("server_url", current_app.config["SERVER_URL"])
+    response = post_json(
+        f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
+        update,
+    )
+    state.save_submission(round_id, response)
+    return jsonify(
+        status="submitted",
+        client_id=current_app.config["CLIENT_ID"],
+        round=round_id,
+        server_response=response,
+    )
+
+
 @experiment_bp.get("/api/training/status")
 def get_training_status():
     """현재 클라이언트의 최신 로컬 학습 결과를 반환한다."""
@@ -88,4 +114,14 @@ def get_extracted_update(round_id):
         client_id=current_app.config["CLIENT_ID"],
         round=round_id,
         update=current_app.extensions["client_state"].extracted_updates.get(round_id),
+    )
+
+
+@experiment_bp.get("/api/updates/submitted/<int:round_id>")
+def get_submitted_update(round_id):
+    """중앙 서버에 제출한 라운드 업데이트 응답을 반환한다."""
+    return jsonify(
+        client_id=current_app.config["CLIENT_ID"],
+        round=round_id,
+        submission=current_app.extensions["client_state"].submitted_updates.get(round_id),
     )

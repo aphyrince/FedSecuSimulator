@@ -56,3 +56,23 @@ def execute_round(round_id):
         return jsonify(result)
     except (RuntimeError, ValueError, OSError) as exc:
         return jsonify(error=str(exc)), 409
+
+
+@experiment_bp.post("/api/results/round")
+def receive_round_result():
+    """중앙 서버로부터 라운드 결과를 수신해 관리자 상태에 저장한다."""
+    result = request.get_json(silent=True) or {}
+    round_id = int(result.get("round", 0))
+    if round_id < 1:
+        return jsonify(error="Round number must be positive"), 400
+    manager = current_app.extensions["experiment_manager"]
+    with manager.lock:
+        results = [
+            item for item in manager.state["round_results"]
+            if item.get("round") != round_id
+        ]
+        results.append(result)
+        results.sort(key=lambda item: item["round"])
+        manager.state["round_results"] = results
+        manager.state["current_round"] = round_id
+    return jsonify(status="received", round=round_id)

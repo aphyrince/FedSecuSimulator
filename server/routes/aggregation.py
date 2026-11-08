@@ -410,8 +410,23 @@ def execute_result(round_id: int, payload: dict):
         ),
         "fedavg_samples": fedavg_result["total_samples"],
         "fedavg_client_weights": fedavg_result["client_weights"],
+        "global_model": deepcopy(current_app.extensions["global_model"]),
+        "evaluation": deepcopy(evaluation),
+        "client_updates": deepcopy(updates),
         "reason": "model_updated",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    callback_url = payload.get("experiment_manager_url")
+    if callback_url:
+        try:
+            _post_json(
+                callback_url.rstrip("/") + "/api/results/round",
+                result,
+                timeout=3.0,
+            )
+        except (OSError, ValueError, URLError):
+            current_app.logger.warning(
+                "Experiment manager result callback failed: round=%s", round_id
+            )
     current_app.extensions["round_results"].append(result)
     return jsonify(result)

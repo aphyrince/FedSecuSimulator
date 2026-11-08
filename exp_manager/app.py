@@ -18,7 +18,7 @@ def create_app(
     app.extensions["server"] = None
 
     process_manager = ProcessManager(
-        host, client_count, server_port, client_base_port
+        host, client_count, server_port, client_base_port, port
     )
     experiment_manager = ExperimentManager(
         process_manager=process_manager,

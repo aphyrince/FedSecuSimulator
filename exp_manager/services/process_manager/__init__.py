@@ -12,12 +12,18 @@ from services.rest_client import RestClient
 
 class ProcessManager:
     def __init__(
-        self, host: str, client_count: int, server_port: int, client_base_port: int
+        self,
+        host: str,
+        client_count: int,
+        server_port: int,
+        client_base_port: int,
+        manager_port: int = 8000,
     ):
         self.host = host
         self.client_count = client_count
         self.server_port = server_port
         self.client_base_port = client_base_port
+        self.manager_port = manager_port
         self.server_process = None
         self.client_processes = {}
         self.lock = threading.RLock()
@@ -179,3 +185,6 @@ class ProcessManager:
 
     def server_url(self) -> str:
         return f"http://{self.host}:{self.server_port}"
+
+    def manager_url(self) -> str:
+        return f"http://{self.host}:{self.manager_port}"

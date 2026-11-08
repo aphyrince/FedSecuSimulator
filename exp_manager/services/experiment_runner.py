@@ -155,6 +155,9 @@ class ExperimentManager:
                     "seed": config["seed"],
                     "nums_clients": self.client_count,
                 }
+                round_config.setdefault(
+                    "experiment_manager_url", self.process_manager.manager_url()
+                )
                 self.rest_client.post_json(
                     f"{self.process_manager.server_url()}/api/round/config",
                     round_config,
@@ -221,6 +224,9 @@ class ExperimentManager:
         round_config = {**inherited, **round_config}
         round_config["seed"] = config["seed"]
         round_config["nums_clients"] = self.client_count
+        round_config.setdefault(
+            "experiment_manager_url", self.process_manager.manager_url()
+        )
 
         # 중앙 서버에 먼저 라운드 설정을 전달한다.
         self.rest_client.post_json(

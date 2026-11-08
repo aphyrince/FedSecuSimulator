@@ -263,3 +263,21 @@ def evaluate_global_model(
 - `GET /api/evaluation/history`: 전체 라운드 평가 결과 조회
 
 평가 결과는 중앙 서버의 `evaluation_results` 상태와 라운드 결과에 함께 저장됩니다.
+
+## 라운드 결과 전달
+
+중앙 서버는 라운드 집계 완료 후 실험 관리자에게 다음 API로 결과를 전달합니다.
+
+- 중앙 서버: `POST /api/rounds/<round_id>/start`
+- 실험 관리자 수신: `POST /api/results/round`
+
+전달 payload에는 다음 데이터가 포함됩니다.
+
+- 모델 평가 결과: `accuracy`, `loss`, `evaluation`
+- 갱신된 전역 모델: `global_model`
+- 라운드에 제출된 클라이언트 업데이트: `client_updates`
+- 선정·채택·지연·악성 클라이언트 정보
+- FedAvg 표본 가중치
+
+실험 관리자 설정의 `experiment_manager_url`을 중앙 서버로 전달하면 자동 콜백됩니다.
+실험 관리자 프로세스가 설정한 호스트와 포트를 사용해 자동 설정되며, 기본값은 `http://127.0.0.1:8000`입니다.

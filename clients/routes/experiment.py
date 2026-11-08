@@ -167,13 +167,17 @@ def start_dlg():
         PROJECT_ROOT_PATH,
     )
     model = payload.get("global_model", {})
-    sigma = float(payload.get("noise_sigma", 0.0))
     gradient = compute_single_image_gradient(model, image, label)
-    gradient = add_gaussian_noise(
-        gradient,
-        sigma=sigma,
-        seed=int(payload.get("seed", 42)) + round_id + current_app.config["CLIENT_ID"],
-    )
+    defense_enabled = bool(payload.get("defense_enabled", False))
+    sigma = float(payload.get("noise_sigma", 0.0)) if defense_enabled else 0.0
+    if defense_enabled:
+        gradient = add_gaussian_noise(
+            gradient,
+            sigma=sigma,
+            seed=int(payload.get("seed", 42))
+            + round_id
+            + current_app.config["CLIENT_ID"],
+        )
     image_shape = payload.get("image_shape")
     if not image_shape:
         image_shape = list(image.shape if hasattr(image, "shape") else [len(image)])
@@ -188,6 +192,7 @@ def start_dlg():
             "client_id": current_app.config["CLIENT_ID"],
             "model_version": payload.get("model_version", 0),
             "noise_sigma": sigma,
+            "defense_enabled": defense_enabled,
             "label": label,
             "image_shape": image_shape,
             "gradient": gradient,

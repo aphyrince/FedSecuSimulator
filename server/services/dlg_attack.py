@@ -5,6 +5,18 @@ import random
 from typing import Any
 
 
+def create_dummy_image(
+    global_model: dict[str, Any],
+    image_shape: list[int],
+    seed: int,
+) -> list[float]:
+    """DLG 최적화의 시작점(dummy image) 생성 교체 지점."""
+    del global_model
+    size = max(1, int(__import__("math").prod(image_shape)))
+    rng = random.Random(seed)
+    return [rng.random() for _ in range(size)]
+
+
 def reconstruct_image(
     global_model: dict[str, Any],
     target_gradient: dict[str, Any],
@@ -12,6 +24,7 @@ def reconstruct_image(
     label: int,
     seed: int,
     iterations: int = 200,
+    dummy_image: list[float] | None = None,
 ) -> dict[str, Any]:
     """경사 차이를 최소화해 단일 이미지를 복원하는 소규모 DLG 구현."""
     target = target_gradient.get("values", [])
@@ -24,8 +37,9 @@ def reconstruct_image(
     if len(flat_weights) < size:
         flat_weights = (flat_weights * ((size // len(flat_weights)) + 1))[:size]
 
-    rng = random.Random(seed)
-    dummy = [rng.random() for _ in range(size)]
+    dummy = list(dummy_image) if dummy_image is not None else create_dummy_image(
+        global_model, image_shape, seed
+    )
     final_loss = 0.0
     learning_rate = 0.05
     for _ in range(max(1, iterations)):

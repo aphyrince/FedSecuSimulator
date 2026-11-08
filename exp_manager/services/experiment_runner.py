@@ -38,6 +38,7 @@ class ExperimentManager:
             "attack_scale": -5.0,
             "round_type": "federated",
             "dlg_noise_sigma": 0.0,
+            "dlg_defense_enabled": False,
             "dlg_iterations": 200,
             "dlg_image": [],
             "dlg_label": 0,
@@ -103,6 +104,7 @@ class ExperimentManager:
                 "attack_scale",
                 "round_type",
                 "dlg_noise_sigma",
+                "dlg_defense_enabled",
                 "dlg_iterations",
                 "dlg_image",
                 "dlg_label",
@@ -134,6 +136,8 @@ class ExperimentManager:
             raise ValueError("DLG 참가 클라이언트 ID 범위가 올바르지 않습니다.")
         if self.config["defense"] not in {"none", "norm_clipping", "coordinate_median"}:
             raise ValueError("지원하지 않는 방어 방식입니다.")
+        if float(self.config["dlg_noise_sigma"]) < 0:
+            raise ValueError("DLG 가우시안 노이즈 sigma는 0 이상이어야 합니다.")
         malicious = self.config["malicious_clients"]
         if len(malicious) > self.client_count or len(set(malicious)) != len(malicious):
             raise ValueError("악성 클라이언트 설정이 올바르지 않습니다.")
@@ -296,6 +300,7 @@ class ExperimentManager:
                 "label": round_config.get("dlg_label", 0),
                 "image_shape": round_config.get("dlg_image_shape", [len(image)]),
                 "noise_sigma": round_config.get("dlg_noise_sigma", 0.0),
+                "defense_enabled": round_config.get("dlg_defense_enabled", False),
                 "server_url": self.process_manager.server_url(),
             },
         )
@@ -460,6 +465,9 @@ class ExperimentManager:
             "attack_scale": custom.get("attack_scale", config["attack_scale"]),
             "round_type": round_type,
             "dlg_noise_sigma": custom.get("dlg_noise_sigma", config["dlg_noise_sigma"]),
+            "dlg_defense_enabled": custom.get(
+                "dlg_defense_enabled", config["dlg_defense_enabled"]
+            ),
             "dlg_iterations": custom.get("dlg_iterations", config["dlg_iterations"]),
             "dlg_image": custom.get("dlg_image", config["dlg_image"]),
             "dlg_label": custom.get("dlg_label", config["dlg_label"]),

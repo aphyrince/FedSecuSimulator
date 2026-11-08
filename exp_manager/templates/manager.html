@@ -45,6 +45,7 @@
         </select>
       </label>
       <label>DLG 가우시안 노이즈 σ <input id="dlg-noise" type="number" min="0" step="0.01" value="0" /></label>
+      <label><input id="dlg-defense-enabled" type="checkbox" /> DLG 그래디언트 노이즈 방어 사용</label>
       <label
         >방어
         <select id="defense">
@@ -135,6 +136,7 @@
             data_distribution: document.getElementById('distribution').value,
             round_type: document.getElementById('round-type').value,
             dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
+            dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
             defense: document.getElementById('defense').value,
             defense_enabled: document.getElementById('defense-enabled').checked,
             attack_enabled: document.getElementById('attack').checked,
@@ -231,6 +233,8 @@
         document.getElementById('distribution').value = config.data_distribution;
         document.getElementById('round-type').value = config.round_type || 'federated';
         document.getElementById('dlg-noise').value = config.dlg_noise_sigma ?? 0;
+        document.getElementById('dlg-defense-enabled').checked = Boolean(config.dlg_defense_enabled);
+        document.getElementById('dlg-noise').disabled = !Boolean(config.dlg_defense_enabled);
         document.getElementById('defense').value = config.defense;
         document.getElementById('defense-enabled').checked = Boolean(config.defense_enabled);
         document.getElementById('attack').checked = config.attack_enabled;
@@ -290,6 +294,7 @@
           defense_enabled: row.querySelector('.round-defense-enabled').checked,
           round_type: document.getElementById('round-type').value,
           dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
+          dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
         }));
       }
 
@@ -316,6 +321,7 @@
             defense_enabled: row.querySelector('.round-defense-enabled').checked,
             round_type: document.getElementById('round-type').value,
             dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
+            dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
           }),
         });
         if (!response.ok) {
@@ -325,6 +331,9 @@
       }
 
       loadExperimentConfig();
+      document.getElementById('dlg-defense-enabled').addEventListener('change', (event) => {
+        document.getElementById('dlg-noise').disabled = !event.target.checked;
+      });
       refresh();
       refreshDataStatus();
       setInterval(() => {

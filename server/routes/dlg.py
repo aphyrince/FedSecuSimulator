@@ -3,7 +3,7 @@ import json
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from services.dlg_attack import reconstruct_image
+from services.dlg_attack import create_dummy_image, reconstruct_image
 
 
 dlg_bp = Blueprint("server_dlg", __name__)
@@ -30,19 +30,32 @@ def receive_dlg_gradient():
     global_model = current_app.extensions.get("global_model") or {
         "weights": [1.0] * max(1, int(__import__("math").prod(payload.get("image_shape", [1]))))
     }
+    image_shape = payload.get("image_shape", [len(gradient.get("values", []))])
+    participant = current_app.extensions.setdefault("dlg_participants", {}).get(
+        round_id, {}
+    )
+    dummy_image = participant.get("dummy_image") or create_dummy_image(
+        global_model=global_model,
+        image_shape=image_shape,
+        seed=int(config.get("seed", 42)) + round_id,
+    )
+    participant["dummy_image"] = dummy_image
     result = reconstruct_image(
         global_model=global_model,
         target_gradient=gradient,
-        image_shape=payload.get("image_shape", [len(gradient.get("values", []))]),
+        image_shape=image_shape,
         label=int(payload.get("label", 0)),
         seed=int(config.get("seed", 42)) + round_id,
         iterations=int(config.get("dlg_iterations", 200)),
+        dummy_image=dummy_image,
     )
     current_app.extensions.setdefault("dlg_results", {})[round_id] = {
         "round": round_id,
         "client_id": payload.get("client_id"),
         "model_version": payload.get("model_version"),
         "noise_sigma": payload.get("noise_sigma", 0.0),
+        "defense_enabled": payload.get("defense_enabled", False),
+        "initial_dummy_image": dummy_image,
         **result,
     }
     dlg_result = current_app.extensions["dlg_results"][round_id]
@@ -75,16 +88,27 @@ def start_dlg_participant():
     current_app.extensions.setdefault("dlg_participants", {})[round_id] = {
         **client,
         "round": round_id,
+        "dummy_image": create_dummy_image(
+            global_model=checkpoint,
+            image_shape=payload.get("image_shape", [1]),
+            seed=int(payload.get("seed", 42)) + round_id,
+        ),
     }
-    result = _post_json(
-        f"{client_url.rstrip('/')}/api/dlg/start",
-        {
-            **payload,
-            "global_model": checkpoint,
-            "model_version": checkpoint.get("model_version", 0),
-            "server_url": payload.get("server_url", request.host_url.rstrip("/")),
-        },
-    )
+    try:
+        result = _post_json(
+            f"{client_url.rstrip('/')}/api/dlg/start",
+            {
+                **payload,
+                "global_model": checkpoint,
+                "model_version": checkpoint.get("model_version", 0),
+                "server_url": payload.get("server_url", request.host_url.rstrip("/")),
+            },
+        )
+    except (OSError, ValueError, URLError) as exc:
+        return jsonify(
+            error="Failed to send checkpoint to DLG participant",
+            detail=str(exc),
+        ), 502
     return jsonify(
         status="checkpoint_sent",
         round=round_id,

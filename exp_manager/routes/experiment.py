@@ -82,11 +82,26 @@ def receive_dlg_result():
     manager = current_app.extensions["experiment_manager"]
     original = manager.get_dlg_original(round_id)
     restored = result.get("reconstructed_image", [])
+    if len(original) != len(restored):
+        return jsonify(
+            error="Original and reconstructed image dimensions do not match",
+            original_size=len(original),
+            reconstructed_size=len(restored),
+        ), 400
     mse = sum(
         (float(original[index]) - float(restored[index])) ** 2
-        for index in range(min(len(original), len(restored)))
-    ) / max(1, len(restored))
+        for index in range(len(original))
+    ) / max(1, len(original))
     result["original_image"] = original
     result["mse"] = round(mse, 8)
+    result["round_type"] = "dlg"
+    result["experiment_type"] = "dlg"
+    result["image_shape"] = result.get("image_shape", [len(original)])
+    result["defense_enabled"] = bool(result.get("defense_enabled", False))
+    result["noise_sigma"] = (
+        float(result.get("noise_sigma", 0.0))
+        if result["defense_enabled"]
+        else 0.0
+    )
     manager.record_dlg_result(round_id, result)
     return jsonify(status="received", round=round_id, mse=result["mse"])

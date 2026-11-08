@@ -44,10 +44,28 @@ DLG_LABEL_PATH=data/dlg/sample_label.txt
 
 실험 관리자는 이미지와 레이블 내용을 전달하지 않고 위 경로만 중앙 서버와
 선정 클라이언트에 전달합니다. 클라이언트의 [clients/services/dlg_data_loader.py](clients/services/dlg_data_loader.py)가
+
+## DLG 가우시안 노이즈 방어
+
+웹 UI의 `DLG 그래디언트 노이즈 방어 사용`을 켜면 DLG 참가 클라이언트가 원본 이미지
+그래디언트 계산 후 설정된 `DLG 가우시안 노이즈 σ`를 적용합니다. 방어가 꺼져 있으면
+노이즈 sigma와 관계없이 노이즈를 추가하지 않습니다. 노이즈 크기는 음수가 될 수 없으며,
+실험 설정과 DLG 결과 기록에 방어 여부와 실제 적용된 sigma가 포함됩니다. 클라이언트의 [clients/services/dlg_data_loader.py](clients/services/dlg_data_loader.py)가
 파일을 읽고, [clients/services/dlg_service.py](clients/services/dlg_service.py)의
 `compute_single_image_gradient()`가 전역 모델과 이미지로 그래디언트를 계산합니다.
 실제 CIFAR 모델 구현으로 교체할 때는 `compute_single_image_gradient()`의 시그니처를 유지한 채
 함수 본문만 교체하면 됩니다.
+
+## DLG 더미 이미지 생성과 복원 최적화
+
+중앙 서버의 [server/services/dlg_attack.py](server/services/dlg_attack.py)에 DLG 교체 지점이 분리되어 있습니다.
+
+- `create_dummy_image(global_model, image_shape, seed) -> list[float]`: DLG 라운드 시작 시 학습된 체크포인트와 이미지 shape으로 더미 이미지를 생성합니다.
+- `reconstruct_image(global_model, target_gradient, image_shape, label, seed, iterations) -> dict`: 중앙 서버가 받은 그래디언트와 더미 이미지를 이용해 복원 이미지를 최적화합니다.
+
+실제 PyTorch/DLG 구현으로 교체할 때 두 함수의 파라미터와 반환 형식을 유지하면 REST 흐름을 그대로 사용할 수 있습니다.
+복원 결과는 중앙 서버의 `POST /api/dlg/gradient`가 실험 관리자 `POST /api/dlg/results`로 전달하고,
+실험 관리자가 원본 이미지와 복원 이미지의 MSE를 계산한 뒤 라운드 JSON에 기록합니다.
 
 DLG 라운드의 참가 클라이언트는 실험 관리자가 자동으로 한 개 선정하거나,
 웹 UI의 `DLG 참가 클라이언트`에서 ID를 지정할 수 있습니다.

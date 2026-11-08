@@ -1,0 +1,20 @@
+{
+  "source": "synthetic",
+  "image_id": "synthetic-square",
+  "model": "TinyDLGNet-linear",
+  "image_shape": [
+    1,
+    3,
+    8,
+    8
+  ],
+  "seed": 42,
+  "steps": 60,
+  "gradient_noise_std": 0.0,
+  "true_label_for_evaluation_only": 3,
+  "predicted_label": 3,
+  "gradient_match_loss_before": 15.814699172973633,
+  "gradient_match_loss_after": 0.01178920827805996,
+  "mse_for_evaluation_only": 0.0001638730027480051,
+  "torch_version": "2.15.0+cpu"
+}

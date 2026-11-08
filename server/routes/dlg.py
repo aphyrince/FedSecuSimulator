@@ -55,3 +55,40 @@ def receive_dlg_gradient():
                 "DLG result callback failed: round=%s", round_id
             )
     return jsonify(status="completed", dlg=current_app.extensions["dlg_results"][round_id])
+
+
+@dlg_bp.post("/api/dlg/participant")
+def start_dlg_participant():
+    """DLG 참가 클라이언트 정보를 받아 저장된 체크포인트를 전달한다."""
+    payload = request.get_json(silent=True) or {}
+    client = payload.get("client", {})
+    client_url = client.get("url")
+    client_id = int(client.get("client_id", -1))
+    if client_id < 0 or not client_url:
+        return jsonify(error="Valid DLG participant client information is required"), 400
+
+    round_id = int(payload.get("round", 1))
+    checkpoint = current_app.extensions.get("global_model")
+    if checkpoint is None:
+        return jsonify(error="Trained global model checkpoint is not available"), 409
+
+    current_app.extensions.setdefault("dlg_participants", {})[round_id] = {
+        **client,
+        "round": round_id,
+    }
+    result = _post_json(
+        f"{client_url.rstrip('/')}/api/dlg/start",
+        {
+            **payload,
+            "global_model": checkpoint,
+            "model_version": checkpoint.get("model_version", 0),
+            "server_url": payload.get("server_url", request.host_url.rstrip("/")),
+        },
+    )
+    return jsonify(
+        status="checkpoint_sent",
+        round=round_id,
+        client=result.get("client_id", client_id),
+        client_url=client_url,
+        model_version=checkpoint.get("model_version", 0),
+    )

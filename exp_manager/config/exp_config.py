@@ -58,6 +58,9 @@ class ExpConfig:
     # 연합학습 라운드 수
     num_rounds: int = 10
 
+    # DLG 실험 시작 전 실행할 정상 연합학습 라운드 수
+    dlg_training_rounds: int = 5
+
     # 라운드별 클라이언트 참여 비율
     participation_rate: float = 0.5
 

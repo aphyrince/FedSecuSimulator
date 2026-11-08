@@ -26,6 +26,35 @@
 - `GET /api/experiment/status`: 라운드 진행 및 결과 조회
 - `POST /api/experiment/reset`: 실험 상태 초기화
 
+## DLG 실험 자동 실행
+
+웹 UI에서 실험 유형을 `DLG 실험 (정상 연합학습 후 공격)`으로 선택하고
+`DLG 사전 정상 연합학습 라운드 수`를 설정합니다.
+`POST /api/experiment/start`가 호출되면 실험 관리자는 설정된 횟수만큼 정상 연합학습
+라운드를 순차 실행하고, 그 다음 라운드에서 자동으로 DLG 공격을 실행합니다.
+
+## DLG 원본 이미지 경로 전달
+
+실제 데이터 경로는 `exp_manager/.env`에 저장합니다.
+
+```dotenv
+DLG_IMAGE_PATH=data/dlg/sample.jpg
+DLG_LABEL_PATH=data/dlg/sample_label.txt
+```
+
+실험 관리자는 이미지와 레이블 내용을 전달하지 않고 위 경로만 중앙 서버와
+선정 클라이언트에 전달합니다. 클라이언트의 [clients/services/dlg_data_loader.py](clients/services/dlg_data_loader.py)가
+파일을 읽고, [clients/services/dlg_service.py](clients/services/dlg_service.py)의
+`compute_single_image_gradient()`가 전역 모델과 이미지로 그래디언트를 계산합니다.
+실제 CIFAR 모델 구현으로 교체할 때는 `compute_single_image_gradient()`의 시그니처를 유지한 채
+함수 본문만 교체하면 됩니다.
+
+DLG 라운드의 참가 클라이언트는 실험 관리자가 자동으로 한 개 선정하거나,
+웹 UI의 `DLG 참가 클라이언트`에서 ID를 지정할 수 있습니다.
+선정 정보는 `POST /api/dlg/participant`를 통해 중앙 서버에 전달되고,
+중앙 서버는 저장된 학습 완료 전역 모델 체크포인트를 해당 클라이언트의
+`POST /api/dlg/start`에 전달합니다.
+
 실험 결과는 `results/<experiment_id>/` 아래에 저장됩니다.
 
 - `rounds.csv`: 라운드별 선정·채택·지연·악성 참여·정확도 로그

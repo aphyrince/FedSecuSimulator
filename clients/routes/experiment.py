@@ -3,8 +3,11 @@ from flask import Blueprint, current_app, jsonify, request
 from services.training_service import build_round_update, run_local_training
 from services.server_client import post_json
 from services.dlg_service import add_gaussian_noise, compute_single_image_gradient
+from services.dlg_data_loader import load_image, load_label
+from pathlib import Path
 
 experiment_bp = Blueprint("client_experiment", __name__)
+PROJECT_ROOT_PATH = Path(__file__).resolve().parents[2]
 
 
 @experiment_bp.post("/api/experiment/config")
@@ -152,8 +155,17 @@ def start_dlg():
     """원본 이미지와 체크포인트로 단일 이미지 그래디언트를 계산한다."""
     payload = request.get_json(silent=True) or {}
     round_id = int(payload.get("round", 1))
-    image = payload.get("image", [])
-    label = int(payload.get("label", 0))
+    image_path = payload.get("image_path", "")
+    image = (
+        load_image(image_path, PROJECT_ROOT_PATH)
+        if image_path
+        else payload.get("image", [])
+    )
+    label = load_label(
+        payload.get("label_path", ""),
+        payload.get("label", 0),
+        PROJECT_ROOT_PATH,
+    )
     model = payload.get("global_model", {})
     sigma = float(payload.get("noise_sigma", 0.0))
     gradient = compute_single_image_gradient(model, image, label)
@@ -162,6 +174,9 @@ def start_dlg():
         sigma=sigma,
         seed=int(payload.get("seed", 42)) + round_id + current_app.config["CLIENT_ID"],
     )
+    image_shape = payload.get("image_shape")
+    if not image_shape:
+        image_shape = list(image.shape if hasattr(image, "shape") else [len(image)])
     state = current_app.extensions["client_state"]
     state.dlg_gradient = gradient
     state.dlg_round = round_id
@@ -174,7 +189,7 @@ def start_dlg():
             "model_version": payload.get("model_version", 0),
             "noise_sigma": sigma,
             "label": label,
-            "image_shape": payload.get("image_shape", [len(image)]),
+            "image_shape": image_shape,
             "gradient": gradient,
         },
     )

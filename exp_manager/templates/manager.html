@@ -19,6 +19,14 @@
       <h2>실험 설정 및 실행</h2>
       <label>실험 ID <input id="experiment-id" /></label>
       <label>라운드 수 <input id="rounds" type="number" min="1" /></label>
+      <label>실험 유형
+        <select id="experiment-type">
+          <option value="federated">일반 연합학습</option>
+          <option value="dlg">DLG 실험 (정상 연합학습 후 공격)</option>
+        </select>
+      </label>
+      <label>DLG 사전 정상 연합학습 라운드 수 <input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
+      <label>DLG 참가 클라이언트 (비워두면 자동 선정) <input id="dlg-client" type="number" min="0" max="9" /></label>
       <label
         >참여율 <input id="participation" type="number" min="0.01" max="1" step="0.05"
       /></label>
@@ -80,6 +88,7 @@
       </div>
       <p id="experiment-status">확인 중...</p>
       <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
+      <p id="dlg-participant-status">DLG 참가 클라이언트: 없음</p>
       <pre id="experiment-log"></pre>
     </div>
 
@@ -116,6 +125,11 @@
           body: JSON.stringify({
             experiment_id: document.getElementById('experiment-id').value,
             num_rounds: Number(document.getElementById('rounds').value),
+            experiment_type: document.getElementById('experiment-type').value,
+            dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
+            dlg_client_id: document.getElementById('dlg-client').value === ''
+              ? null
+              : Number(document.getElementById('dlg-client').value),
             participation_rate: Number(document.getElementById('participation').value),
             seed: Number(document.getElementById('seed').value),
             data_distribution: document.getElementById('distribution').value,
@@ -163,13 +177,18 @@
         const experimentResponse = await fetch('/api/experiment/status');
         const experiment = await experimentResponse.json();
         document.getElementById('experiment-status').textContent =
-          `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.config.num_rounds} · ${experiment.message}`;
+          `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.total_rounds} · ${experiment.message}`;
         const maliciousSelections = experiment.malicious_clients_by_round || {};
         const selectedRounds = Object.entries(maliciousSelections)
           .filter(([, ids]) => ids.length)
           .map(([round, ids]) => `라운드 ${round}: 클라이언트 ${ids.join(', ')}`);
         document.getElementById('malicious-clients-status').textContent =
           selectedRounds.length ? selectedRounds.join(' · ') : '선정된 악성 클라이언트: 없음';
+        const dlgSelections = experiment.dlg_participant_by_round || {};
+        const dlgRounds = Object.entries(dlgSelections)
+          .map(([round, clientId]) => `라운드 ${round}: 클라이언트 ${clientId}`);
+        document.getElementById('dlg-participant-status').textContent =
+          dlgRounds.length ? dlgRounds.join(' · ') : 'DLG 참가 클라이언트: 없음';
         document.getElementById('experiment-log').textContent = JSON.stringify(
           experiment.round_results.slice(-5),
           null,
@@ -201,6 +220,12 @@
         const config = await response.json();
         document.getElementById('experiment-id').value = config.experiment_id;
         document.getElementById('rounds').value = config.num_rounds;
+        document.getElementById('experiment-type').value = config.experiment_type || 'federated';
+        document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
+        document.getElementById('dlg-client').value =
+          config.dlg_client_id === null || config.dlg_client_id === undefined
+            ? ''
+            : config.dlg_client_id;
         document.getElementById('participation').value = config.participation_rate;
         document.getElementById('seed').value = config.seed;
         document.getElementById('distribution').value = config.data_distribution;
@@ -214,7 +239,11 @@
       }
 
       function buildRoundEditor(savedConfigs = []) {
-        const count = Math.max(1, Number(document.getElementById('rounds').value) || 1);
+        const isDlgExperiment = document.getElementById('experiment-type').value === 'dlg';
+        const normalCount = isDlgExperiment
+          ? Number(document.getElementById('dlg-training-rounds').value) || 5
+          : Number(document.getElementById('rounds').value) || 1;
+        const count = Math.max(1, normalCount + (isDlgExperiment ? 1 : 0));
         const defaultParticipation = Number(document.getElementById('participation').value);
         const defaultAttack = document.getElementById('attack').checked;
         const defaultMalicious = document.getElementById('malicious').value;

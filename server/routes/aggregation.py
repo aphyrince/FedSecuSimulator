@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 from flask import Blueprint, current_app, jsonify, request
 
 from services.fedavg import aggregate_fedavg
+from services.model_evaluation import evaluate_global_model
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
@@ -334,14 +335,6 @@ def execute_result(round_id: int, payload: dict):
         aggregated_delta = sum(values) / len(values)
 
     attack = payload.get("attack_enabled", False)
-    accuracy = max(0.05, min(0.99, 0.50 + round_id * 0.025 + aggregated_delta * 0.1))
-    if attack:
-        accuracy -= 0.08
-    if payload.get("defense") == "norm_clipping":
-        accuracy -= 0.01
-    elif payload.get("defense") == "coordinate_median" and attack:
-        accuracy += 0.04
-
     selected_ids = payload.get("selected_clients", [])
     accepted_ids = [update["client_id"] for update in updates]
     malicious_ids = payload.get("malicious_clients", [])
@@ -364,6 +357,32 @@ def execute_result(round_id: int, payload: dict):
             "client_weights": {},
         }
 
+    try:
+        evaluation = evaluate_global_model(
+            global_model=current_app.extensions.get("global_model", {}),
+            dataset_range=current_app.extensions.get("dataset_range", {}),
+            evaluation_config=payload,
+            round_id=round_id,
+        )
+        current_app.extensions["evaluation_results"][round_id] = evaluation
+    except (ValueError, TypeError, KeyError) as exc:
+        current_app.logger.warning(
+            "Global model evaluation failed: round=%s error=%s",
+            round_id,
+            exc,
+        )
+        evaluation = {
+            "accuracy": 0.0,
+            "loss": 1.0,
+            "num_test_samples": 0,
+            "correct_predictions": 0,
+            "metrics": {},
+        }
+        current_app.extensions["evaluation_results"][round_id] = evaluation
+
+    accuracy = evaluation["accuracy"]
+    loss = evaluation["loss"]
+
     result = {
         "experiment_id": payload.get("experiment_id", "unknown"),
         "round": round_id,
@@ -384,7 +403,7 @@ def execute_result(round_id: int, payload: dict):
         "attack_enabled": attack,
         "defense": payload.get("defense", "none"),
         "accuracy": round(accuracy, 4),
-        "loss": round(max(0.05, 1.0 - accuracy), 4),
+        "loss": round(loss, 4),
         "aggregated_delta": round(aggregated_delta, 4),
         "global_model_version": current_app.extensions["global_model"].get(
             "model_version", round_id

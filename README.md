@@ -227,3 +227,39 @@ def aggregate_fedavg(
 
 - `GET /api/model/global`: 현재 FedAvg 전역 모델
 - `GET /api/model/history`: 라운드별 갱신된 전역 모델과 표본 가중치
+
+## 전역 모델 성능 평가
+
+시나리오 15의 테스트 데이터셋 평가는
+[server/services/model_evaluation.py](server/services/model_evaluation.py)의
+`evaluate_global_model()`이 담당합니다.
+
+```python
+def evaluate_global_model(
+    global_model: dict,
+    dataset_range: dict,
+    evaluation_config: dict,
+    round_id: int,
+) -> dict:
+    ...
+```
+
+반환값 필수 키:
+
+```python
+{
+    "accuracy": 0.0,
+    "loss": 0.0,
+    "num_test_samples": 0,
+    "correct_predictions": 0,
+    "metrics": {},
+}
+```
+
+실제 CIFAR-10 평가로 교체할 때는 함수 본문에서 모델 가중치 복원, 테스트 범위의
+이미지·레이블 로딩, `model.eval()` 추론을 구현하고 위 형식으로 반환하면 됩니다.
+
+- `GET /api/evaluation/<round_id>`: 해당 라운드 평가 결과 조회
+- `GET /api/evaluation/history`: 전체 라운드 평가 결과 조회
+
+평가 결과는 중앙 서버의 `evaluation_results` 상태와 라운드 결과에 함께 저장됩니다.

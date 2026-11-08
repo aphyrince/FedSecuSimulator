@@ -44,3 +44,25 @@ def get_global_model_history():
     """라운드별 FedAvg 전역 모델 갱신 기록을 반환한다."""
     history = current_app.extensions.get("global_model_history", [])
     return jsonify(count=len(history), history=history)
+
+
+@experiment_bp.get("/api/evaluation/<int:round_id>")
+def get_round_evaluation(round_id):
+    """특정 라운드의 테스트 데이터셋 평가 결과를 반환한다."""
+    evaluation = current_app.extensions.get("evaluation_results", {}).get(round_id)
+    if evaluation is None:
+        return jsonify(error="Evaluation result not found"), 404
+    return jsonify(round=round_id, evaluation=evaluation)
+
+
+@experiment_bp.get("/api/evaluation/history")
+def get_evaluation_history():
+    """라운드별 전역 모델 평가 결과 이력을 반환한다."""
+    evaluations = current_app.extensions.get("evaluation_results", {})
+    return jsonify(
+        count=len(evaluations),
+        evaluations=[
+            {"round": round_id, "evaluation": evaluations[round_id]}
+            for round_id in sorted(evaluations)
+        ],
+    )

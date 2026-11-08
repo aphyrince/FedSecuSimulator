@@ -58,6 +58,13 @@ def round_availability(round_id):
     )
 
 
+@system_bp.get("/api/rounds/<int:round_id>/selected-clients")
+def round_selected_clients(round_id):
+    """라운드 참여자로 선정된 클라이언트 ID 목록을 반환한다."""
+    selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
+    return jsonify(round=round_id, selected_clients=selected, count=len(selected))
+
+
 @system_bp.post("/api/shutdown")
 def shutdown():
     # 실험 관리자 종료 요청을 받은 경우 Flask 서버를 스케줄링하여 종료한다.

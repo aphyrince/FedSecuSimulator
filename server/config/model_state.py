@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import random
 from common.types import ModelWeights
 
 
@@ -18,3 +19,18 @@ class ModelState:
 
     # 글로벌 모델 파라미터
     weights: ModelWeights | None = None
+
+
+def create_random_global_model(seed: int = 42, num_parameters: int = 32):
+    """실험 시작용 기본 랜덤 전역 모델을 만든다."""
+    rng = random.Random(seed)
+    weights = {
+        "layer_0.weight": [round(rng.uniform(-1.0, 1.0), 6) for _ in range(num_parameters)],
+        "layer_0.bias": [round(rng.uniform(-1.0, 1.0), 6) for _ in range(max(1, num_parameters // 4))],
+    }
+    return {
+        "model_version": 0,
+        "architecture": "custom_random",
+        "num_parameters": num_parameters,
+        "weights": weights,
+    }

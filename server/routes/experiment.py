@@ -1,4 +1,5 @@
 from flask import Blueprint, current_app, jsonify, request
+from config.model_state import create_random_global_model
 
 
 experiment_bp = Blueprint("server_experiment", __name__)
@@ -20,9 +21,19 @@ def get_config():
 def set_round_config():
     payload = request.get_json(silent=True) or {}
     current_app.extensions["round_config"] = payload
+    if current_app.extensions.get("global_model") is None:
+        current_app.extensions["global_model"] = create_random_global_model(
+            seed=payload.get("seed", 42),
+            num_parameters=payload.get("num_parameters", 32),
+        )
     return jsonify(status="configured", round=payload.get("round"), config=payload)
 
 
 @experiment_bp.get("/api/round/config")
 def get_round_config():
     return jsonify(current_app.extensions.get("round_config", {}))
+
+
+@experiment_bp.get("/api/model/global")
+def get_global_model():
+    return jsonify(current_app.extensions.get("global_model", {}))

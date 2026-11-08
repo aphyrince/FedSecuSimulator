@@ -1,5 +1,6 @@
 # FedSecuSimulator
-2026 웹 기반 시스템 팀 프로젝트 5팀 연합학습 보안 시뮬레이션 및 공격·방어 결과의 원인 분석 (A조) 
+
+2026 웹 기반 시스템 팀 프로젝트 5팀 연합학습 보안 시뮬레이션 및 공격·방어 결과의 원인 분석 (A조)
 
 ## Flask 프로세스 실행
 
@@ -65,4 +66,28 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/data/distribute -C
 ```powershell
 .\.venv\Scripts\python.exe server\app.py
 .\.venv\Scripts\python.exe clients\app.py --client-id 0 --port 5101
+```
+
+## 전역 모델 구조 변경
+
+실험 시작 시 중앙 서버의 랜덤 전역 모델은 [server/config/model_state.py](server/config/model_state.py)의
+`create_random_global_model()`에서 생성됩니다.
+
+팀원이 실제 PyTorch 모델을 연동할 경우:
+
+1. 해당 함수의 반환 형태를 팀 모델 직렬화 형태로 변경합니다.
+2. 중앙 서버 전달 payload는 기본적으로 Flask가 JSON으로 직렬화할 수 있어야 합니다.
+3. Tensor 모델의 경우 Tensor를 중첩 리스트 또는 Base64로 변환한 후 각 클라이언트에서 원래 타입으로 복원합니다.
+4. Flask JSON으로 직접 보낼 수 있는 간단한 모델 형태 예시는 다음과 같습니다.
+
+```python
+return {
+    "model_version": 0,
+    "architecture": "CNN",
+    "num_parameters": 32,
+    "weights": {
+        "conv1.weight": [0.1, -0.2, 0.3],
+        "conv1.bias": [0.0, 0.1],
+    },
+}
 ```

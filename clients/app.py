@@ -21,6 +21,7 @@ def create_app(client_id: int, port: int):
     app.extensions["experiment_config"] = {}
     app.extensions["dataset_range"] = {}
     app.extensions["available"] = True
+    app.extensions["global_models"] = []
     app.register_blueprint(api_bp)
     return app
 

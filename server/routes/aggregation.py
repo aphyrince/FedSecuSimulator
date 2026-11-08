@@ -135,10 +135,28 @@ def start_round(round_id: int):
 
     seed = config.get("seed", 42)
     participation = config.get("participation_rate", 0.5)
-    selected_count = max(1, round(len(available_clients) * participation))
+    nums_clients = config.get("nums_clients", len(registered))
+    selected_count = max(1, round(nums_clients * participation))
     rng = random.Random(seed + round_id)
     selected = sorted(rng.sample(range(len(available_clients)), min(selected_count, len(available_clients))))
     selected_clients = [available_clients[index] for index in selected]
+    selected_ids = [client["client_id"] for client in selected_clients]
+    current_app.extensions["selected_clients"][round_id] = selected_ids
+
+    global_model = current_app.extensions.get("global_model")
+    if global_model is None:
+        return jsonify(error="Global model is not initialized"), 409
+    for client in selected_clients:
+        try:
+            _post_json(
+                f"{client['url']}/api/model/global",
+                {**global_model, "round": round_id},
+            )
+        except (OSError, ValueError):
+            current_app.logger.warning(
+                "Global model delivery failed: client_id=%s", client["client_id"]
+            )
+
     delay_ids = set(config.get("delay_clients", []))
     accepted_clients = [
         client for client in selected_clients if client["client_id"] not in delay_ids
@@ -166,7 +184,7 @@ def start_round(round_id: int):
 
     result_payload = {
         **config,
-        "selected_clients": [client["client_id"] for client in selected_clients],
+        "selected_clients": selected_ids,
         "delay_clients": [
             client["client_id"] for client in selected_clients if client["client_id"] in delay_ids
         ],

@@ -21,6 +21,24 @@ def get_config():
     return jsonify(current_app.extensions["experiment_config"])
 
 
+@experiment_bp.post("/api/model/global")
+def receive_global_model():
+    """중앙 서버가 전달한 전역 모델을 수신해 로컬 최신 모델로 저장한다."""
+    payload = request.get_json(silent=True) or {}
+    current_app.extensions["global_model"] = payload
+    current_app.extensions["global_models"].append(payload)
+    return jsonify(
+        status="received",
+        client_id=current_app.config["CLIENT_ID"],
+        model_version=payload.get("model_version"),
+    )
+
+
+@experiment_bp.get("/api/model/global")
+def get_global_model():
+    return jsonify(current_app.extensions.get("global_model", {}))
+
+
 @experiment_bp.post("/api/round/execute")
 def execute_round():
     """실험 관리자가 요청한 로컬 라운드 업데이트를 생성한다."""

@@ -2,15 +2,14 @@ import argparse
 import os
 import sys
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from flask import Flask
 from werkzeug.serving import make_server
 
 from routes.api import api_bp
-
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
 
 def create_app(host: str, port: int):
@@ -25,6 +24,8 @@ def create_app(host: str, port: int):
     app.extensions["round_config"] = {}
     app.extensions["available_clients"] = {}
     app.extensions["availability_responses"] = {}
+    app.extensions["selected_clients"] = {}
+    app.extensions["global_model"] = None
 
     app.register_blueprint(api_bp)
     return app

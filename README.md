@@ -91,3 +91,40 @@ return {
     },
 }
 ```
+
+## 로컬 학습 로직 변경
+
+전역 모델 수신 시 로컬 학습은 [clients/services/local_training.py](clients/services/local_training.py)의
+`train_local_model()`이 담당합니다.
+
+현재 포함된 함수는 아직 실제 학습을 수행하지 않는 가상 구현입니다. 팀원이 실제 CIFAR-10 학습을 구현할 때는
+함수 이름과 아래 파라미터, 반환 형식을 유지하고 함수 본문만 교체하면 됩니다.
+
+```python
+def train_local_model(
+    global_model: dict,
+    dataset_range: dict,
+    training_config: dict,
+    round_id: int,
+    client_id: int,
+) -> dict:
+    ...
+```
+
+반환값 필수 키:
+
+```python
+{
+    "local_model": {},       # 학습 후 로컬 전역 모델 payload
+    "model_delta": 0.0,      # 중앙 서버 집계가 사용할 업데이트 또는 업데이트 dict
+    "num_samples": 0,        # 학습에 사용한 표본 수
+    "training_loss": 0.0,    # 로컬 학습 손실
+}
+```
+
+클라이언트 API 동작:
+
+- `POST /api/model/global`: 전역 모델 교체 후 `train_local_model()`을 자동 실행합니다.
+- `GET /api/training/status`: 최신 로컬 학습 상태와 결과를 조회합니다.
+- `GET /api/training/history`: 라운드별 로컬 학습 기록을 조회합니다.
+- `POST /api/round/execute`: 저장된 최신 로컬 학습 결과를 업데이트로 반환합니다.

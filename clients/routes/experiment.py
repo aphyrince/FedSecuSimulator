@@ -1,5 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 
+from services.local_training import train_local_model
+
 
 experiment_bp = Blueprint("client_experiment", __name__)
 
@@ -27,10 +29,27 @@ def receive_global_model():
     payload = request.get_json(silent=True) or {}
     current_app.extensions["global_model"] = payload
     current_app.extensions["global_models"].append(payload)
+    round_id = int(payload.get("round", 1))
+    training_result = train_local_model(
+        global_model=payload,
+        dataset_range=current_app.extensions.get("dataset_range", {}),
+        training_config=current_app.extensions.get("experiment_config", {}),
+        round_id=round_id,
+        client_id=current_app.config["CLIENT_ID"],
+    )
+    training_record = {
+        "round": round_id,
+        "client_id": current_app.config["CLIENT_ID"],
+        "status": "completed",
+        **training_result,
+    }
+    current_app.extensions["latest_local_training"] = training_record
+    current_app.extensions["local_training_results"].append(training_record)
     return jsonify(
         status="received",
         client_id=current_app.config["CLIENT_ID"],
         model_version=payload.get("model_version"),
+        training=training_record,
     )
 
 
@@ -45,13 +64,39 @@ def execute_round():
     payload = request.get_json(silent=True) or {}
     malicious = payload.get("malicious", False)
     attacked = malicious and payload.get("attack_enabled", False)
+    round_id = payload.get("round", 1)
+    latest_training = current_app.extensions.get("latest_local_training", {})
+    model_delta = (
+        latest_training.get("model_delta", 0.82)
+        if latest_training.get("round") == round_id
+        else 0.82
+    )
     return jsonify(
-        round=payload.get("round", 1),
+        round=round_id,
         client_id=current_app.config["CLIENT_ID"],
         malicious=malicious,
         valid=True,
         update={
-            "model_delta": -3.5 if attacked else 0.82,
+            "model_delta": -3.5 if attacked else model_delta,
             "scale": -5.0 if attacked else 1.0,
         },
+    )
+
+
+@experiment_bp.get("/api/training/status")
+def get_training_status():
+    """현재 클라이언트의 최신 로컬 학습 결과를 반환한다."""
+    return jsonify(
+        client_id=current_app.config["CLIENT_ID"],
+        training=current_app.extensions.get("latest_local_training", {}),
+    )
+
+
+@experiment_bp.get("/api/training/history")
+def get_training_history():
+    """라운드별 로컬 학습 결과 기록을 반환한다."""
+    return jsonify(
+        client_id=current_app.config["CLIENT_ID"],
+        count=len(current_app.extensions.get("local_training_results", [])),
+        results=current_app.extensions.get("local_training_results", []),
     )

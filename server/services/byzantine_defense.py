@@ -3,7 +3,7 @@
 from typing import Any
 from common.model import finite_number, weights_norm
 from common.updates import update_delta, with_delta
-
+from security.defenses import clip_update
 
 def apply_norm_clipping(
     updates: list[dict[str, Any]], max_norm: float, global_model: dict | None = None

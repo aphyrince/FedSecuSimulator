@@ -147,7 +147,56 @@ def start_dlg():
     """원본 이미지와 체크포인트로 단일 이미지 그래디언트를 계산한다."""
     payload = request.get_json(silent=True) or {}
     if payload.get("global_model", {}).get("architecture") == MODEL_FORMAT:
-        return jsonify(error="The role-2 DLG implementation must be connected to common.model before using the real CNN"), 501
+        from fedsec.data import CifarRangeDataset
+        from security.dlg_api import make_gradient_payload, original_pixels
+
+        state = current_app.extensions["client_state"]
+        try:
+            sample, label = CifarRangeDataset(state.dataset_range, limit=1)[0]
+            sigma = float(payload.get("noise_sigma", 0.0)) if payload.get("defense_enabled") else 0.0
+            gradient = make_gradient_payload(
+                payload["global_model"], sample, label,
+                sigma=sigma,
+                seed=int(payload.get("seed", 42)) + int(payload.get("round", 1)) + current_app.config["CLIENT_ID"],
+            )
+        except (ValueError, TypeError, OSError, RuntimeError) as exc:
+            return jsonify(error=f"CIFAR-10 DLG gradient failed: {exc}"), 400
+
+        manager_url = payload.get("experiment_manager_url")
+        if not manager_url:
+            return jsonify(error="experiment_manager_url is required for DLG evaluation"), 400
+        round_id = int(payload.get("round", 1))
+        client_id = current_app.config["CLIENT_ID"]
+        # 이 경로는 실험 관리자에게만 원본을 전달한다. 중앙 공격 서버는 원본/라벨을 못 본다.
+        post_json(
+            f"{manager_url.rstrip('/')}/api/dlg/original",
+            {
+                "experiment_id": payload["global_model"]["experiment_id"],
+                "round": round_id,
+                "client_id": client_id,
+                "image": original_pixels(sample),
+                "label": label,
+            },
+            timeout=30.0,
+        )
+        state.dlg_gradient = {"format": gradient["format"], "noise_sigma": sigma}
+        state.dlg_round = round_id
+        server_url = payload.get("server_url", current_app.config["SERVER_URL"])
+        response = post_json(
+            f"{server_url.rstrip('/')}/api/dlg/gradient",
+            {
+                "round": round_id,
+                "client_id": client_id,
+                "model_version": payload["global_model"].get("model_version", 0),
+                "noise_sigma": sigma,
+                "defense_enabled": bool(payload.get("defense_enabled", False)),
+                "image_shape": [3, 32, 32],
+                "gradient": gradient,
+            },
+            timeout=float(payload.get("round_timeout", 900)) + 120.0,
+        )
+        return jsonify(status="submitted", round=round_id, client_id=client_id,
+                       server_status=response.get("status"))
     round_id = int(payload.get("round", 1))
     image_path = payload.get("image_path", "")
     image = (

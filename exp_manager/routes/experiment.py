@@ -74,6 +74,23 @@ def receive_round_result():
     )
 
 
+@experiment_bp.post("/api/dlg/original")
+def receive_dlg_original():
+    """신뢰된 평가 관리자만 단일 이미지 원본을 보관한다. 서버 복원에는 전달하지 않는다."""
+    payload = request.get_json(silent=True) or {}
+    manager = current_app.extensions["experiment_manager"]
+    try:
+        manager.store_dlg_original(
+            round_id=int(payload["round"]),
+            experiment_id=payload["experiment_id"],
+            client_id=int(payload["client_id"]),
+            image=payload["image"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(status="original_saved", round=payload["round"])
+
+
 @experiment_bp.post("/api/dlg/results")
 def receive_dlg_result():
     """서버 복원 결과와 원본 이미지로 DLG MSE를 계산해 기록한다."""

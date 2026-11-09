@@ -141,8 +141,6 @@ class ExperimentManager:
         positive_int(self.config["seed"], "seed", 0)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", self.config["experiment_id"]):
             raise ValueError("실험 ID는 영문·숫자·밑줄·하이픈으로 입력하세요.")
-        if self.config.get("experiment_type") == "dlg" or any(item.get("round_type") == "dlg" for item in self.config.get("round_configs", [])):
-            raise ValueError("실제 CNN의 DLG는 2번 담당자의 common.model 연결 후 사용할 수 있습니다.")
         if not 0 < self.config["participation_rate"] <= 1:
             raise ValueError("participation_rate는 0 초과 1 이하이어야 합니다.")
         if self.config["num_rounds"] < 1:
@@ -292,19 +290,11 @@ class ExperimentManager:
             self.record_round_result(result, advance=True)
 
     def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
-        """실험 관리자가 DLG 참가자를 선정하고 중앙 서버에 전달한다."""
-        image = round_config.get("dlg_image", [])
-        image_path = round_config.get("dlg_image_path", "")
-        if not image and image_path:
-            try:
-                from clients.services.dlg_data_loader import load_image
+        """참가 클라이언트에서 실제 CIFAR-10 단일 샘플을 선택한다.
 
-                image = load_image(image_path, PROJECT_ROOT_PATH)
-            except (ImportError, RuntimeError, FileNotFoundError):
-                image = []
-        if image_path and image:
-            round_config["dlg_image_shape"] = [len(image)]
-        self.dlg_images_by_round[round_id] = list(image)
+        서버에는 원본 이미지/레이블을 보내지 않는다. 원본은 클라이언트가
+        /api/dlg/original 평가 관리자 endpoint로 직접 제출한다.
+        """
         registry = self.process_manager.client_registry()
         if not registry:
             raise RuntimeError("DLG client is not registered")
@@ -317,44 +307,77 @@ class ExperimentManager:
                 item for item in registry if item["client_id"] == int(configured_client)
             )
         self.dlg_participant_by_round[round_id] = client["client_id"]
-
+        self.dlg_images_by_round[round_id] = []
+        round_config["dlg_image_shape"] = [3, 32, 32]
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
             round_config,
         )
-        result = self.rest_client.post_json(
+        return self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/dlg/participant",
             {
                 **round_config,
                 "client": client,
-                "image": image,
-                "image_path": round_config.get("dlg_image_path", ""),
-                "label_path": round_config.get("dlg_label_path", ""),
-                "label": round_config.get("dlg_label", 0),
-                "image_shape": round_config.get("dlg_image_shape", [len(image)]),
+                "image_shape": [3, 32, 32],
                 "noise_sigma": round_config.get("dlg_noise_sigma", 0.0),
                 "defense_enabled": round_config.get("dlg_defense_enabled", False),
                 "server_url": self.process_manager.server_url(),
             },
+            timeout=float(round_config.get("round_timeout", 900)) + 120.0,
         )
-        return result
+
+    def store_dlg_original(self, round_id: int, experiment_id: str,
+                           client_id: int, image: list[float]) -> None:
+        """신뢰된 매니저에 원본 등록. 공격 서버에는 원본을 노출하지 않는다."""
+        import math
+        if experiment_id != self.config["experiment_id"]:
+            raise ValueError("Wrong DLG experiment ID")
+        if self.dlg_participant_by_round.get(round_id) != client_id:
+            raise ValueError("Wrong DLG participant")
+        if not isinstance(image, list) or len(image) != 3 * 32 * 32:
+            raise ValueError("Expected 3072 CIFAR-10 pixels")
+        if any(not isinstance(x, (int, float)) or not math.isfinite(x) or not 0 <= x <= 1 for x in image):
+            raise ValueError("DLG original pixels must be finite in [0,1]")
+        with self.lock:
+            self.dlg_images_by_round[round_id] = list(image)
 
     def get_dlg_original(self, round_id: int) -> list[float]:
         return self.dlg_images_by_round.get(round_id, [])
 
     def record_dlg_result(self, round_id: int, result: dict) -> Path:
+        """DLG MSE/이미지를 별도 저장하고, 실험 상태를 completed로 종료한다."""
+        import json
+        config = self.get_config()
         result = {
             **result,
+            "experiment_id": config["experiment_id"],
             "round": round_id,
             "round_type": "dlg",
             "experiment_type": "dlg",
         }
-        if round_id not in self.processed_rounds:
-            result_path = self.record_round_result(result)
-        else:
-            result_path = save_round_result(self.results_dir, self.get_config(), result)
+        output_dir = self.results_dir / config["experiment_id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        from exp_manager.services.dlg_report import save_dlg_images
+        result["images"] = save_dlg_images(
+            self.get_dlg_original(round_id), result["reconstructed_image"], output_dir
+        )
+        result_path = output_dir / "dlg_result.json"
+        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         with self.lock:
             self.dlg_results_by_round[round_id] = result
+            self.state["current_round"] = round_id
+            self.state["status"] = "completed"
+            self.state["message"] = "실제 CNN DLG 복원 및 MSE 평가가 완료되었습니다."
+            federated_results = list(self.state["round_results"])
+        # 기존 accuracy/rounds 그래프는 정상 사전 학습 라운드만 사용한다.
+        if federated_results:
+            log_path, summary_path, chart_path = save_experiment_outputs(
+                self.results_dir, config, federated_results
+            )
+            with self.lock:
+                self.state.update(
+                    log_path=str(log_path), result_path=str(summary_path), chart_path=str(chart_path)
+                )
         return result_path
 
     def prepare_malicious_clients(
@@ -499,8 +522,6 @@ class ExperimentManager:
                 if round_id == int(config.get("dlg_training_rounds", 5)) + 1
                 else "federated"
             )
-        if round_type == "dlg":
-            raise ValueError("실제 CNN의 DLG는 2번 담당자의 common.model 연결이 필요합니다.")
         return {
             **TrainingSettings.from_dict({**config, **custom}).to_dict(),
             "model_config": custom.get("model_config", config["model_config"]),

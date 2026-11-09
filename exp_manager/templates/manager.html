@@ -57,13 +57,14 @@
           <h3>DLG 설정</h3>
           <div class="form-grid">
             <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
+            <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
             <label>DLG 참가 클라이언트
               <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
             </label>
           </div>
           <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
           <div id="dlg-noise-setting" class="conditional-setting">
-            <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="0.01" value="0" /></label>
+            <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
           </div>
         </div>
 
@@ -170,6 +171,7 @@
             num_rounds: Number(document.getElementById('rounds').value),
             experiment_type: document.getElementById('experiment-type').value,
             dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
+            dlg_iterations: Number(document.getElementById('dlg-iterations').value),
             dlg_client_id: document.getElementById('dlg-client').value === ''
               ? null
               : Number(document.getElementById('dlg-client').value),
@@ -274,6 +276,7 @@
         document.getElementById('rounds').value = config.num_rounds;
         document.getElementById('experiment-type').value = config.experiment_type || 'federated';
         document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
+        document.getElementById('dlg-iterations').value = config.dlg_iterations ?? 2;
         document.getElementById('dlg-client').value =
           config.dlg_client_id === null || config.dlg_client_id === undefined
             ? ''

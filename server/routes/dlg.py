@@ -9,7 +9,7 @@ from server.services.dlg_attack import create_dummy_image, reconstruct_image
 dlg_bp = Blueprint("server_dlg", __name__)
 
 
-def _post_json(url, payload, timeout=3.0):
+def _post_json(url, payload, timeout=180.0):
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -27,6 +27,36 @@ def receive_dlg_gradient():
     round_id = int(payload.get("round", 1))
     gradient = payload.get("gradient", {})
     config = current_app.extensions.setdefault("round_config", {})
+    if gradient.get("format") == "small_cnn_gradient_v1":
+        from security.dlg_api import reconstruct_gradient_payload
+        global_model = current_app.extensions.get("global_model")
+        if not global_model:
+            return jsonify(error="Global CNN model is missing"), 409
+        try:
+            result = reconstruct_gradient_payload(
+                global_model, gradient,
+                steps=int(config.get("dlg_iterations", 2)),
+                seed=int(config.get("seed", 42)) + round_id,
+            )
+        except (ValueError, TypeError, RuntimeError, MemoryError) as exc:
+            return jsonify(error=f"Real DLG reconstruction failed: {exc}"), 400
+        dlg_result = {
+            "round": round_id,
+            "client_id": payload.get("client_id"),
+            "model_version": payload.get("model_version"),
+            "noise_sigma": payload.get("noise_sigma", 0.0),
+            "defense_enabled": payload.get("defense_enabled", False),
+            **result,
+        }
+        current_app.extensions.setdefault("dlg_results", {})[round_id] = dlg_result
+        callback_url = config.get("experiment_manager_url")
+        if not callback_url:
+            return jsonify(error="DLG manager callback URL missing"), 409
+        # 평가 관리자가 원본 이미지와 MSE를 계산하며, 서버는 원본을 알 수 없다.
+        _post_json(callback_url.rstrip("/") + "/api/dlg/results", dlg_result)
+        return jsonify(status="completed", round=round_id,
+                       gradient_loss=dlg_result["gradient_loss"],
+                       predicted_label=dlg_result["predicted_label"])
     global_model = current_app.extensions.get("global_model") or {
         "weights": [1.0] * max(1, int(__import__("math").prod(payload.get("image_shape", [1]))))
     }

@@ -22,3 +22,12 @@ htmlcov/
 # CIFAR-10 dataset
 **/cifar-10-batches-py/
 data/cifar-10-python.tar.gz
+
+# 실험 실행 결과 (모델, 로그, 그래프)
+# 실제 파일은 로컬에 보관
+/results/
+
+results/security_baseline_01/
+results/security_attack_01/
+results/security_clipping_01/
+results/security_median_01/

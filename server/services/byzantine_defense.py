@@ -3,7 +3,7 @@
 from typing import Any
 from common.model import finite_number, weights_norm
 from common.updates import update_delta, with_delta
-
+from security.defenses import clip_update
 
 def apply_norm_clipping(
     updates: list[dict[str, Any]], max_norm: float, global_model: dict | None = None
@@ -13,11 +13,33 @@ def apply_norm_clipping(
     max_norm = finite_number(max_norm, "max_norm", positive=True)
     for update in updates:
         if global_model is not None:
+            # 실제 클라이언트의 모델 업데이트 추출
             delta = update_delta(global_model, update)
+
+            # 클리핑 전 전체 L2 노름
             norm = weights_norm(delta)
-            factor = min(1.0, max_norm / norm) if norm else 1.0
-            item = with_delta(global_model, update, {key: value * factor for key, value in delta.items()})
-            item["update"].update(defense="norm_clipping", clip_factor=factor, original_norm=norm)
+
+            # 파라미터 이름과 Tensor 분리
+            names = list(delta.keys())
+            layers = [delta[name] for name in names]
+
+            # 2번 담당 보안 알고리즘 적용
+            clipped_layers = clip_update(layers, max_norm)
+
+            # Tensor를 다시 딕셔너리로 변환
+            clipped_delta = dict(zip(names, clipped_layers))
+
+            factor = min(1.0, max_norm / norm) if norm > 0 else 1.0
+
+            # 서버의 기존 업데이트 형식으로 변환
+            item = with_delta(global_model, update, clipped_delta)
+
+            item["update"].update(
+                defense="norm_clipping",
+                clip_factor=factor,
+                original_norm=norm,
+            )
+
             clipped.append(item)
             continue
         item = dict(update)

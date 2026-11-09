@@ -8,7 +8,7 @@ from common.model import decode_weights, encode_weights
 from common.updates import update_delta, validate_updates
 from fedsec.contracts import ClientUpdate
 from fedsec.aggregation import aggregate_fedavg as aggregate_core
-
+from security.defenses import coordinate_median as security_coordinate_median
 
 class FedAvgResult(TypedDict):
     global_model: dict[str, Any]
@@ -44,13 +44,41 @@ def aggregate_fedavg(global_model: dict, client_updates: list[dict]) -> FedAvgRe
             "client_weights": {str(item["client_id"]): weight for item, weight in zip(updates, weights)}}
 
 
-def aggregate_coordinate_median(global_model: dict, client_updates: list[dict]) -> FedAvgResult:
-    """참여자 수가 짝수이면 가운데 두 좌표값의 평균을 사용한다."""
+def aggregate_coordinate_median(
+    global_model: dict,
+    client_updates: list[dict]
+) -> FedAvgResult:
+
+    # 유효한 클라이언트 업데이트 확인
     updates = _accepted(global_model, client_updates)
-    deltas = [update_delta(global_model, item) for item in updates]
-    result = {}
+
+    # 실제 Tensor 업데이트 추출
+    deltas = [
+        update_delta(global_model, item)
+        for item in updates
+    ]
+
+    # 파라미터 이름 정리
+    names = list(deltas[0].keys())
+
+    # 각 클라이언트의 Tensor를 리스트로 변환
+    client_layers = [
+        [delta[name] for name in names]
+        for delta in deltas
+    ]
+
+    # 2번 담당 중앙값 알고리즘 사용
+    median_layers = security_coordinate_median(client_layers)
+
+    # 결과를 파라미터 이름별로 복원
+    result = dict(zip(names, median_layers))
+
     size = len(deltas)
-    for key in deltas[0]:
-        ordered = torch.stack([delta[key].double() for delta in deltas]).sort(dim=0).values
-        result[key] = (ordered[(size - 1) // 2] + ordered[size // 2]) / 2
-    return _result(global_model, result, updates, [1 / size] * size)
+
+    # 중앙값 델타를 전역 모델에 적용
+    return _result(
+        global_model,
+        result,
+        updates,
+        [1 / size] * size,
+    )

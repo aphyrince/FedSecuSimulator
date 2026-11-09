@@ -19,3 +19,6 @@ htmlcov/
 
 # 원본 데이터와 다운로드 파일
 /data/raw/
+# CIFAR-10 dataset
+**/cifar-10-batches-py/
+data/cifar-10-python.tar.gz

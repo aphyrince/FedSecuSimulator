@@ -59,13 +59,19 @@ def reconstruct_from_gradients(
     steps: int = 100,
     lr: float = 0.1,
     seed: int = 42,
+    image_min: float = 0.0,
+    image_max: float = 1.0,
 ) -> DLGResult:
     """공격자 측: 모델과 공유 그래디언트만으로 이미지/레이블 추정.
 
     원본 이미지나 정답 레이블을 전달하지 않으며, MSE도 공격의 손실함수로 사용하지 않는다.
+    image_min/max 기본값은 기존 0~1 실험과 호환된다.
+    실제 CIFAR-10 SmallCNN의 정규화 입력은 -1~1이므로 호출 시 bounds를 지정한다.
     """
     if steps < 1 or lr <= 0:
         raise ValueError("steps >= 1, lr > 0 이어야 합니다.")
+    if not (float('-inf') < image_min < image_max < float('inf')):
+        raise ValueError("image_min < image_max 이고 두 값은 유한해야 합니다.")
     if len(image_shape) != 3 or image_shape[0] != 3:
         raise ValueError("image_shape은 (3, 높이, 너비)여야 합니다.")
     if num_classes < 2:
@@ -82,6 +88,7 @@ def reconstruct_from_gradients(
     generator = torch.Generator(device=device).manual_seed(seed)
     dummy_image = nn.Parameter(
         torch.rand((1, *image_shape), device=device, dtype=dtype, generator=generator)
+        * (image_max - image_min) + image_min
     )
     dummy_label_logits = nn.Parameter(
         torch.zeros((1, num_classes), device=device, dtype=dtype)
@@ -116,7 +123,7 @@ def reconstruct_from_gradients(
             match_loss.backward()
             optimizer.step()
             with torch.no_grad():
-                dummy_image.clamp_(0.0, 1.0)
+                dummy_image.clamp_(image_min, image_max)
 
     assert best_image is not None and best_label is not None
     return DLGResult(

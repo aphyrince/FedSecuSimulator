@@ -19,7 +19,7 @@
       </div>
     </header>
 
-    <main>
+    <main class="dashboard-layout">
       <section class="card">
         <div class="section-heading">
           <div>
@@ -29,13 +29,7 @@
         </div>
         <div class="form-grid">
           <label>실험 ID<input id="experiment-id" /></label>
-          <label>라운드 수<input id="rounds" type="number" min="1" /></label>
-          <label>실험 유형
-            <select id="experiment-type">
-              <option value="federated">일반 연합학습</option>
-              <option value="dlg">DLG 실험 (정상 연합학습 후 공격)</option>
-            </select>
-          </label>
+          <label id="rounds-setting">라운드 수<input id="rounds" type="number" min="1" /></label>
           <label>참여율<input id="participation" type="number" min="0.01" max="1" step="0.05" /></label>
           <label>시드<input id="seed" type="number" /></label>
           <label>로컬 epoch<input id="local-epochs" type="number" min="1" /></label>
@@ -53,47 +47,94 @@
           </label>
         </div>
 
-        <div id="dlg-settings" class="settings-panel">
-          <h3>DLG 설정</h3>
-          <div class="form-grid">
-            <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
-            <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
-            <label>DLG 참가 클라이언트
-              <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
-            </label>
+        <input id="experiment-type" type="hidden" value="federated" />
+        <nav class="experiment-tabs" role="tablist" aria-label="실험 유형">
+          <button
+            id="federated-tab"
+            class="experiment-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="federated-tab-panel"
+            onclick="selectExperimentTab('federated')"
+          >
+            <span>내부자 협력공격</span>
+            <small>정상 · 공격 · 공격 + 방어</small>
+          </button>
+          <button
+            id="dlg-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="dlg-tab-panel"
+            onclick="selectExperimentTab('dlg')"
+          >
+            <span>DLG 실험</span>
+            <small>공격 · 공격 + 방어</small>
+          </button>
+        </nav>
+
+        <section
+          id="federated-tab-panel"
+          class="experiment-tab-panel"
+          role="tabpanel"
+          aria-labelledby="federated-tab"
+        >
+          <div class="settings-panel">
+            <h3>내부자 협력공격 설정</h3>
+            <p class="panel-description">공격을 끄면 정상 연합학습을 진행합니다. 방어는 공격 라운드에서만 사용할 수 있습니다.</p>
+            <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
+            <div id="attack-settings" class="conditional-setting">
+              <label>악성 클라이언트 후보
+                <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
+                <small>공격 ON 시 후보 중 2개를 실험 관리자가 선정합니다.</small>
+              </label>
+            </div>
+            <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
+            <div id="defense-method-setting" class="conditional-setting">
+              <label>방어 방식
+                <select id="defense">
+                  <option value="norm_clipping">노름 클리핑</option>
+                  <option value="coordinate_median">좌표별 중앙값 집계</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
-          <div id="dlg-noise-setting" class="conditional-setting">
-            <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
+        </section>
+
+        <section
+          id="dlg-tab-panel"
+          class="experiment-tab-panel"
+          role="tabpanel"
+          aria-labelledby="dlg-tab"
+          hidden
+        >
+          <div class="settings-panel">
+            <h3>DLG 공격 설정</h3>
+            <p class="panel-description">DLG 공격은 사전 정상 학습 후 실행됩니다. 방어를 켜면 클라이언트 그래디언트에 가우시안 노이즈를 추가합니다.</p>
+            <div class="form-grid">
+              <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
+              <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
+              <label>DLG 참가 클라이언트
+                <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
+              </label>
+            </div>
+            <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
+            <div id="dlg-noise-setting" class="conditional-setting">
+              <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
+            </div>
           </div>
+        </section>
+
+        <div class="data-distribution-panel">
+          <div>
+            <h3>CIFAR-10 데이터 분배</h3>
+            <p id="data-status">데이터 분배 상태를 확인 중...</p>
+          </div>
+          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
         </div>
 
-        <div class="settings-panel">
-          <h3>공격 및 서버 방어</h3>
-          <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
-          <div id="attack-settings" class="conditional-setting">
-            <label>악성 클라이언트 후보
-              <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
-              <small>공격 ON 시 후보 중 2개를 선정합니다.</small>
-            </label>
-          </div>
-          <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
-          <div id="defense-method-setting" class="conditional-setting">
-            <label>방어 방식
-              <select id="defense">
-                <option value="norm_clipping">노름 클리핑</option>
-                <option value="coordinate_median">좌표별 중앙값 집계</option>
-              </select>
-            </label>
-          </div>
-        </div>
-
-        <label class="compact-label">라운드 유형
-          <select id="round-type">
-            <option value="federated">일반 연합학습</option>
-            <option value="dlg">DLG 공격</option>
-          </select>
-        </label>
       <div class="experiment-actions">
         <button onclick="saveExperimentConfig()">설정 저장</button>
         <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
@@ -102,7 +143,7 @@
       </div>
 
       <h3>라운드별 설정</h3>
-      <button onclick="buildRoundEditor()">라운드 설정표 생성</button>
+      <button onclick="buildRoundEditor(readRoundConfigs())">라운드 설정표 생성</button>
       <div class="round-table-wrap">
       <table>
         <thead>
@@ -120,343 +161,40 @@
       </table>
       </div>
 
-      <div class="card">
-        <h2>CIFAR-10 데이터 분배</h2>
-        <button onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
-        <p id="data-status">확인 중...</p>
-      </div>
       <p id="experiment-status">확인 중...</p>
       <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
       <p id="dlg-participant-status">DLG 참가 클라이언트: 없음</p>
       <pre id="experiment-log"></pre>
       </section>
 
-    <div class="card">
-      <h2>중앙 서버</h2>
-      <p id="server-status">확인 중...</p>
-    </div>
+      <aside class="status-sidebar" aria-label="시스템 상태">
+        <section class="card status-card">
+          <p class="eyebrow">System status</p>
+          <h2>중앙 서버</h2>
+          <p id="server-status">확인 중...</p>
+        </section>
 
-    <div class="card">
-      <h2>클라이언트</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>주소</th>
-            <th>프로세스</th>
-            <th>API 응답</th>
-          </tr>
-        </thead>
-        <tbody id="clients"></tbody>
-      </table>
-    </div>
+        <section class="card status-card">
+          <p class="eyebrow">Workers</p>
+          <h2>클라이언트</h2>
+          <div class="client-status-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>주소</th>
+                  <th>프로세스</th>
+                  <th>API</th>
+                </tr>
+              </thead>
+              <tbody id="clients"></tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
     </main>
 
-    <script>
-      async function control(path) {
-          const response = await fetch(path, { method: 'POST' });
-          if (!response.ok) {
-            const result = await response.json();
-            alert(result.error || '요청을 처리하지 못했습니다.');
-          }
-        await refresh();
-      }
-
-      async function saveExperimentConfig() {
-        const response = await fetch('/api/experiment/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            experiment_id: document.getElementById('experiment-id').value,
-            num_rounds: Number(document.getElementById('rounds').value),
-            experiment_type: document.getElementById('experiment-type').value,
-            dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
-            dlg_iterations: Number(document.getElementById('dlg-iterations').value),
-            dlg_client_id: document.getElementById('dlg-client').value === ''
-              ? null
-              : Number(document.getElementById('dlg-client').value),
-            participation_rate: Number(document.getElementById('participation').value),
-            seed: Number(document.getElementById('seed').value),
-              local_epochs: Number(document.getElementById('local-epochs').value),
-              batch_size: Number(document.getElementById('batch-size').value),
-              learning_rate: Number(document.getElementById('learning-rate').value),
-              device: document.getElementById('device').value,
-              round_timeout: Number(document.getElementById('round-timeout').value),
-              max_train_samples: document.getElementById('max-train-samples').value === '' ? null : Number(document.getElementById('max-train-samples').value),
-              max_test_samples: document.getElementById('max-test-samples').value === '' ? null : Number(document.getElementById('max-test-samples').value),
-            data_distribution: document.getElementById('distribution').value,
-            round_type: document.getElementById('round-type').value,
-            dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
-            dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
-            defense: document.getElementById('defense').value,
-            defense_enabled: document.getElementById('defense-enabled').checked,
-            attack_enabled: document.getElementById('attack').checked,
-            malicious_clients: document
-              .getElementById('malicious')
-              .value.split(',')
-              .map((value) => Number(value.trim()))
-              .filter((value) => Number.isInteger(value)),
-            round_configs: readRoundConfigs(),
-          }),
-        });
-        if (!response.ok) {
-          alert((await response.json()).error);
-        }
-        await refresh();
-      }
-
-      function stateText(value) {
-        return value ? '<span class="ok">정상</span>' : '<span class="off">종료됨</span>';
-      }
-
-      async function refresh() {
-        const response = await fetch('/api/status');
-        const data = await response.json();
-        document.getElementById('server-status').innerHTML =
-          `${data.server.url} · 프로세스: ${stateText(data.server.running)} · API: ${stateText(data.server.reachable)}`;
-        document.getElementById('clients').innerHTML = data.clients
-          .map(
-            (client) => `
-        <tr>
-          <td>${client.client_id}</td>
-          <td><a href="${client.url}/health" target="_blank">${client.url}</a></td>
-          <td>${stateText(client.running)}</td>
-          <td>${stateText(client.reachable)}</td>
-        </tr>
-      `,
-          )
-          .join('');
-
-        const experimentResponse = await fetch('/api/experiment/status');
-        const experiment = await experimentResponse.json();
-        document.getElementById('experiment-status').textContent =
-          `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.total_rounds} · ${experiment.message}`;
-        const maliciousSelections = experiment.malicious_clients_by_round || {};
-        const selectedRounds = Object.entries(maliciousSelections)
-          .filter(([, ids]) => ids.length)
-          .map(([round, ids]) => `라운드 ${round}: 클라이언트 ${ids.join(', ')}`);
-        document.getElementById('malicious-clients-status').textContent =
-          selectedRounds.length ? selectedRounds.join(' · ') : '선정된 악성 클라이언트: 없음';
-        const dlgSelections = experiment.dlg_participant_by_round || {};
-        const dlgRounds = Object.entries(dlgSelections)
-          .map(([round, clientId]) => `라운드 ${round}: 클라이언트 ${clientId}`);
-        document.getElementById('dlg-participant-status').textContent =
-          dlgRounds.length ? dlgRounds.join(' · ') : 'DLG 참가 클라이언트: 없음';
-        document.getElementById('experiment-log').textContent = JSON.stringify(
-          experiment.round_results.slice(-5),
-          null,
-          2,
-        );
-        updateRoundExecutionButtons(experiment.round_results || []);
-      }
-
-      async function refreshDataStatus() {
-        const response = await fetch('/api/data/status');
-        const data = await response.json();
-        document.getElementById('data-status').textContent =
-          `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
-      }
-
-      async function distributeData() {
-        const response = await fetch('/api/data/distribute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ seed: 42 }),
-        });
-        if (!response.ok) {
-          alert((await response.json()).error);
-        }
-        await refreshDataStatus();
-      }
-
-      async function loadExperimentConfig() {
-        const response = await fetch('/api/experiment/config');
-        const config = await response.json();
-        document.getElementById('experiment-id').value = config.experiment_id;
-        document.getElementById('rounds').value = config.num_rounds;
-        document.getElementById('experiment-type').value = config.experiment_type || 'federated';
-        document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
-        document.getElementById('dlg-iterations').value = config.dlg_iterations ?? 2;
-        document.getElementById('dlg-client').value =
-          config.dlg_client_id === null || config.dlg_client_id === undefined
-            ? ''
-            : config.dlg_client_id;
-        document.getElementById('participation').value = config.participation_rate;
-        document.getElementById('seed').value = config.seed;
-          document.getElementById('local-epochs').value = config.local_epochs;
-          document.getElementById('batch-size').value = config.batch_size;
-          document.getElementById('learning-rate').value = config.learning_rate;
-          document.getElementById('device').value = config.device;
-          document.getElementById('round-timeout').value = config.round_timeout;
-          document.getElementById('max-train-samples').value = config.max_train_samples ?? '';
-          document.getElementById('max-test-samples').value = config.max_test_samples ?? '';
-        document.getElementById('distribution').value = config.data_distribution;
-        document.getElementById('round-type').value = config.round_type || 'federated';
-        document.getElementById('dlg-noise').value = config.dlg_noise_sigma ?? 0;
-        document.getElementById('dlg-defense-enabled').checked = Boolean(config.dlg_defense_enabled);
-        document.getElementById('dlg-noise').disabled = !Boolean(config.dlg_defense_enabled);
-          document.getElementById('defense').value = config.defense === 'none' ? 'norm_clipping' : config.defense;
-        document.getElementById('defense-enabled').checked = Boolean(config.defense_enabled);
-        document.getElementById('attack').checked = config.attack_enabled;
-        document.getElementById('malicious').value = config.malicious_clients.join(',');
-        buildRoundEditor(config.round_configs || []);
-        updateConditionalSettings();
-      }
-
-      function updateConditionalSettings() {
-        const dlgEnabled = document.getElementById('experiment-type').value === 'dlg';
-        document.getElementById('dlg-settings').hidden = !dlgEnabled;
-
-        const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
-        document.getElementById('dlg-noise-setting').hidden =
-          !dlgEnabled || !dlgDefenseEnabled;
-        document.getElementById('dlg-noise').disabled =
-          !dlgEnabled || !dlgDefenseEnabled;
-
-        const attackEnabled = document.getElementById('attack').checked;
-        document.getElementById('attack-settings').hidden = !attackEnabled;
-
-        const defenseEnabled = document.getElementById('defense-enabled').checked;
-        document.getElementById('defense-method-setting').hidden = !defenseEnabled;
-      }
-
-      function updateRoundVisibility(row) {
-        const attackEnabled = row.querySelector('.round-attack').checked;
-        const defenseEnabled = row.querySelector('.round-defense-enabled').checked;
-        const defenseToggle = row.querySelector('.round-defense-enabled');
-        const defenseMethod = row.querySelector('.round-defense');
-
-        defenseToggle.disabled = !attackEnabled;
-        defenseMethod.disabled = !attackEnabled || !defenseEnabled;
-
-        row.classList.toggle('non-attack-round', !attackEnabled);
-      }
-
-      function updateRoundExecutionButtons(roundResults = []) {
-        const executedRounds = new Set(
-          roundResults.map((result) => Number(result.round)).filter(Number.isInteger),
-        );
-        const rows = Array.from(document.querySelectorAll('#round-configs tr'));
-        const nextRound = rows.find((row) =>
-          !executedRounds.has(Number(row.dataset.round)),
-        );
-
-        rows.forEach((row) => {
-          const round = Number(row.dataset.round);
-          const button = row.querySelector('.round-execute-button');
-          const executed = executedRounds.has(round);
-          const current = nextRound === row;
-          button.disabled = executed || !current;
-          button.textContent = executed ? '실행됨' : current ? '실행' : '대기';
-          button.title = executed
-            ? `라운드 ${round}은(는) 이미 실행되었습니다.`
-            : current
-              ? `라운드 ${round} 실행`
-              : `이전 라운드 실행 후 활성화됩니다.`;
-        });
-      }
-
-      function buildRoundEditor(savedConfigs = []) {
-        const isDlgExperiment = document.getElementById('experiment-type').value === 'dlg';
-        const normalCount = isDlgExperiment
-          ? Number(document.getElementById('dlg-training-rounds').value) || 5
-          : Number(document.getElementById('rounds').value) || 1;
-        const count = Math.max(1, normalCount + (isDlgExperiment ? 1 : 0));
-        const defaultParticipation = Number(document.getElementById('participation').value);
-        const defaultAttack = document.getElementById('attack').checked;
-        const defaultDefense = document.getElementById('defense').value;
-          const defaultDefenseEnabled = document.getElementById('defense-enabled').checked;
-        document.getElementById('round-configs').innerHTML = Array.from(
-          { length: count },
-          (_, index) => {
-            const round = index + 1;
-            const saved = savedConfigs[index] || {};
-            const delayClients = saved.delay_clients || [];
-            return `
-              <tr data-round="${round}">
-                <td>${round}</td>
-                <td><input class="round-participation" type="number" min="0.01" max="1" step="0.05" value="${saved.participation_rate ?? defaultParticipation}"></td>
-                <td><input class="round-attack" type="checkbox" ${saved.attack_enabled ?? defaultAttack ? 'checked' : ''}></td>
-                <td>
-                  <div class="client-checkboxes">
-                    ${Array.from({ length: 10 }, (_, clientId) =>
-                      `<label title="클라이언트 ${clientId}">
-                        <input class="round-delay" type="checkbox" value="${clientId}" ${delayClients.includes(clientId) ? 'checked' : ''}>
-                        <span>${clientId}</span>
-                      </label>`
-                    ).join('')}
-                  </div>
-                </td>
-                <td>
-                    <input class="round-defense-enabled" type="checkbox" ${(saved.defense_enabled ?? defaultDefenseEnabled) ? 'checked' : ''}>
-                </td>
-                <td>
-                  <select class="round-defense">
-                    <option value="norm_clipping" ${saved.defense === 'norm_clipping' || (!saved.defense && defaultDefense === 'norm_clipping') ? 'selected' : ''}>노름 클리핑</option>
-                    <option value="coordinate_median" ${saved.defense === 'coordinate_median' || (!saved.defense && defaultDefense === 'coordinate_median') ? 'selected' : ''}>좌표별 중앙값</option>
-                  </select>
-                </td>
-                <td><button class="round-execute-button" onclick="executeSingleRound(${round})">실행</button></td>
-              </tr>`;
-          },
-        ).join('');
-        document.querySelectorAll('#round-configs tr').forEach(updateRoundVisibility);
-      }
-
-      function readRoundConfigs() {
-        return Array.from(document.querySelectorAll('#round-configs tr')).map((row) => ({
-          participation_rate: Number(row.querySelector('.round-participation').value),
-          attack_enabled: row.querySelector('.round-attack').checked,
-          delay_clients: Array.from(row.querySelectorAll('.round-delay:checked'))
-            .map((checkbox) => Number(checkbox.value)),
-          defense: row.querySelector('.round-defense').value,
-          defense_enabled: row.querySelector('.round-defense-enabled').checked,
-          round_type: document.getElementById('round-type').value,
-          dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
-          dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
-        }));
-      }
-
-      async function executeSingleRound(round) {
-        await saveExperimentConfig();
-        const row = document.querySelector(`#round-configs tr[data-round="${round}"]`);
-        const response = await fetch(`/api/rounds/${round}/execute`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            experiment_id: document.getElementById('experiment-id').value,
-            round: round,
-            participation_rate: Number(row.querySelector('.round-participation').value),
-            attack_enabled: row.querySelector('.round-attack').checked,
-            delay_clients: Array.from(row.querySelectorAll('.round-delay:checked'))
-              .map((checkbox) => Number(checkbox.value)),
-            defense: row.querySelector('.round-defense').value,
-            defense_enabled: row.querySelector('.round-defense-enabled').checked,
-            round_type: document.getElementById('round-type').value,
-            dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
-            dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
-          }),
-        });
-        if (!response.ok) {
-          alert((await response.json()).error);
-        }
-        await refresh();
-      }
-
-      loadExperimentConfig();
-      document.getElementById('experiment-type').addEventListener('change', updateConditionalSettings);
-      document.getElementById('dlg-defense-enabled').addEventListener('change', updateConditionalSettings);
-      document.getElementById('attack').addEventListener('change', updateConditionalSettings);
-      document.getElementById('defense-enabled').addEventListener('change', updateConditionalSettings);
-      document.getElementById('round-configs').addEventListener('change', (event) => {
-        const row = event.target.closest('tr');
-        if (row) updateRoundVisibility(row);
-      });
-      refresh();
-      refreshDataStatus();
-      setInterval(() => {
-        if (!document.hidden) refresh();
-      }, 3000);
-    </script>
+    <script defer src="{{ url_for('static', filename='js/round-config.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/manager.js') }}"></script>
   </body>
 </html>

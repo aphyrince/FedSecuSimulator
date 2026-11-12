@@ -34,7 +34,6 @@ async function saveExperimentConfig() {
         ? null
         : Number(document.getElementById('max-test-samples').value),
       data_distribution: document.getElementById('distribution').value,
-      round_type: document.getElementById('round-type').value,
       dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
       dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
       defense: document.getElementById('defense').value,
@@ -57,6 +56,11 @@ async function saveExperimentConfig() {
 function stateText(value) {
   return value ? '<span class="ok">정상</span>' : '<span class="off">종료됨</span>';
 }
+
+const roundConfigsByExperimentType = {
+  federated: [],
+  dlg: [],
+};
 
       async function refresh() {
         const response = await fetch('/api/status');
@@ -124,6 +128,8 @@ function stateText(value) {
         document.getElementById('experiment-id').value = config.experiment_id;
         document.getElementById('rounds').value = config.num_rounds;
         document.getElementById('experiment-type').value = config.experiment_type || 'federated';
+        roundConfigsByExperimentType[document.getElementById('experiment-type').value] =
+          config.round_configs || [];
         document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
         document.getElementById('dlg-iterations').value = config.dlg_iterations ?? 2;
         document.getElementById('dlg-client').value =
@@ -140,7 +146,6 @@ function stateText(value) {
           document.getElementById('max-train-samples').value = config.max_train_samples ?? '';
           document.getElementById('max-test-samples').value = config.max_test_samples ?? '';
         document.getElementById('distribution').value = config.data_distribution;
-        document.getElementById('round-type').value = config.round_type || 'federated';
         document.getElementById('dlg-noise').value = config.dlg_noise_sigma ?? 0;
         document.getElementById('dlg-defense-enabled').checked = Boolean(config.dlg_defense_enabled);
         document.getElementById('dlg-noise').disabled = !Boolean(config.dlg_defense_enabled);
@@ -152,9 +157,30 @@ function stateText(value) {
         updateConditionalSettings();
       }
 
+      function selectExperimentTab(experimentType) {
+        const currentType = document.getElementById('experiment-type').value;
+        if (currentType === experimentType) {
+          return;
+        }
+
+        roundConfigsByExperimentType[currentType] = readRoundConfigs();
+        document.getElementById('experiment-type').value = experimentType;
+        buildRoundEditor(roundConfigsByExperimentType[experimentType] || []);
+        updateConditionalSettings();
+      }
+
       function updateConditionalSettings() {
         const dlgEnabled = document.getElementById('experiment-type').value === 'dlg';
-        document.getElementById('dlg-settings').hidden = !dlgEnabled;
+        const roundsSetting = document.getElementById('rounds-setting');
+        roundsSetting.classList.toggle('reserved-hidden', dlgEnabled);
+        roundsSetting.setAttribute('aria-hidden', String(dlgEnabled));
+        document.getElementById('rounds').disabled = dlgEnabled;
+        document.getElementById('federated-tab-panel').hidden = dlgEnabled;
+        document.getElementById('dlg-tab-panel').hidden = !dlgEnabled;
+        document.getElementById('federated-tab').classList.toggle('active', !dlgEnabled);
+        document.getElementById('federated-tab').setAttribute('aria-selected', String(!dlgEnabled));
+        document.getElementById('dlg-tab').classList.toggle('active', dlgEnabled);
+        document.getElementById('dlg-tab').setAttribute('aria-selected', String(dlgEnabled));
 
         const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
         document.getElementById('dlg-noise-setting').hidden =
@@ -164,13 +190,18 @@ function stateText(value) {
 
         const attackEnabled = document.getElementById('attack').checked;
         document.getElementById('attack-settings').hidden = !attackEnabled;
+        if (!attackEnabled && !dlgEnabled) {
+          document.getElementById('defense-enabled').checked = false;
+        }
 
         const defenseEnabled = document.getElementById('defense-enabled').checked;
-        document.getElementById('defense-method-setting').hidden = !defenseEnabled;
+        document.getElementById('defense-method-setting').hidden =
+          !defenseEnabled || !attackEnabled || dlgEnabled;
+        document.getElementById('defense-enabled').disabled =
+          !attackEnabled || dlgEnabled;
       }
 
       loadExperimentConfig();
-      document.getElementById('experiment-type').addEventListener('change', updateConditionalSettings);
       document.getElementById('dlg-defense-enabled').addEventListener('change', updateConditionalSettings);
       document.getElementById('attack').addEventListener('change', updateConditionalSettings);
       document.getElementById('defense-enabled').addEventListener('change', updateConditionalSettings);

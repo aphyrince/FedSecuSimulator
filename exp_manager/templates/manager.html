@@ -29,13 +29,7 @@
         </div>
         <div class="form-grid">
           <label>실험 ID<input id="experiment-id" /></label>
-          <label>라운드 수<input id="rounds" type="number" min="1" /></label>
-          <label>실험 유형
-            <select id="experiment-type">
-              <option value="federated">일반 연합학습</option>
-              <option value="dlg">DLG 실험 (정상 연합학습 후 공격)</option>
-            </select>
-          </label>
+          <label id="rounds-setting">라운드 수<input id="rounds" type="number" min="1" /></label>
           <label>참여율<input id="participation" type="number" min="0.01" max="1" step="0.05" /></label>
           <label>시드<input id="seed" type="number" /></label>
           <label>로컬 epoch<input id="local-epochs" type="number" min="1" /></label>
@@ -53,47 +47,85 @@
           </label>
         </div>
 
-        <div id="dlg-settings" class="settings-panel">
-          <h3>DLG 설정</h3>
-          <div class="form-grid">
-            <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
-            <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
-            <label>DLG 참가 클라이언트
-              <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
-            </label>
-          </div>
-          <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
-          <div id="dlg-noise-setting" class="conditional-setting">
-            <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
-          </div>
-        </div>
+        <input id="experiment-type" type="hidden" value="federated" />
+        <nav class="experiment-tabs" role="tablist" aria-label="실험 유형">
+          <button
+            id="federated-tab"
+            class="experiment-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="federated-tab-panel"
+            onclick="selectExperimentTab('federated')"
+          >
+            <span>내부자 협력공격</span>
+            <small>정상 · 공격 · 공격 + 방어</small>
+          </button>
+          <button
+            id="dlg-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="dlg-tab-panel"
+            onclick="selectExperimentTab('dlg')"
+          >
+            <span>DLG 실험</span>
+            <small>공격 · 공격 + 방어</small>
+          </button>
+        </nav>
 
-        <div class="settings-panel">
-          <h3>공격 및 서버 방어</h3>
-          <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
-          <div id="attack-settings" class="conditional-setting">
-            <label>악성 클라이언트 후보
-              <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
-              <small>공격 ON 시 후보 중 2개를 선정합니다.</small>
-            </label>
+        <section
+          id="federated-tab-panel"
+          class="experiment-tab-panel"
+          role="tabpanel"
+          aria-labelledby="federated-tab"
+        >
+          <div class="settings-panel">
+            <h3>내부자 협력공격 설정</h3>
+            <p class="panel-description">공격을 끄면 정상 연합학습을 진행합니다. 방어는 공격 라운드에서만 사용할 수 있습니다.</p>
+            <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
+            <div id="attack-settings" class="conditional-setting">
+              <label>악성 클라이언트 후보
+                <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
+                <small>공격 ON 시 후보 중 2개를 실험 관리자가 선정합니다.</small>
+              </label>
+            </div>
+            <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
+            <div id="defense-method-setting" class="conditional-setting">
+              <label>방어 방식
+                <select id="defense">
+                  <option value="norm_clipping">노름 클리핑</option>
+                  <option value="coordinate_median">좌표별 중앙값 집계</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
-          <div id="defense-method-setting" class="conditional-setting">
-            <label>방어 방식
-              <select id="defense">
-                <option value="norm_clipping">노름 클리핑</option>
-                <option value="coordinate_median">좌표별 중앙값 집계</option>
-              </select>
-            </label>
-          </div>
-        </div>
+        </section>
 
-        <label class="compact-label">라운드 유형
-          <select id="round-type">
-            <option value="federated">일반 연합학습</option>
-            <option value="dlg">DLG 공격</option>
-          </select>
-        </label>
+        <section
+          id="dlg-tab-panel"
+          class="experiment-tab-panel"
+          role="tabpanel"
+          aria-labelledby="dlg-tab"
+          hidden
+        >
+          <div class="settings-panel">
+            <h3>DLG 공격 설정</h3>
+            <p class="panel-description">DLG 공격은 사전 정상 학습 후 실행됩니다. 방어를 켜면 클라이언트 그래디언트에 가우시안 노이즈를 추가합니다.</p>
+            <div class="form-grid">
+              <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
+              <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
+              <label>DLG 참가 클라이언트
+                <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
+              </label>
+            </div>
+            <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
+            <div id="dlg-noise-setting" class="conditional-setting">
+              <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
+            </div>
+          </div>
+        </section>
 
         <div class="data-distribution-panel">
           <div>
@@ -111,7 +143,7 @@
       </div>
 
       <h3>라운드별 설정</h3>
-      <button onclick="buildRoundEditor()">라운드 설정표 생성</button>
+      <button onclick="buildRoundEditor(readRoundConfigs())">라운드 설정표 생성</button>
       <div class="round-table-wrap">
       <table>
         <thead>

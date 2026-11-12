@@ -87,6 +87,10 @@ label {
     font-size: 14px;
     font-weight: 700;
 }
+.reserved-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
 input,
 select {
     width: 100%;
@@ -109,6 +113,44 @@ input[type="checkbox"] {
     border-radius: 12px;
     background: #f8fafc;
     border: 1px solid #edf1f7;
+}
+.experiment-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 24px;
+    padding: 6px;
+    border: 1px solid #e6eaf2;
+    border-radius: 12px;
+    background: #f4f6fa;
+}
+.experiment-tab {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    margin: 0;
+    padding: 14px 18px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #475569;
+    text-align: left;
+}
+.experiment-tab span { font-size: 15px; }
+.experiment-tab small { color: #64748b; font-size: 12px; }
+.experiment-tab.active {
+    border-color: #d6e3f7;
+    background: white;
+    color: #1d4ed8;
+    box-shadow: 0 2px 8px rgba(36, 49, 76, 0.08);
+}
+.experiment-tab.active small { color: #526887; }
+.experiment-tab-panel { min-height: 220px; }
+.panel-description {
+    margin: -4px 0 14px;
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1.5;
 }
 .toggle-row {
     flex-direction: row;
@@ -197,6 +239,8 @@ pre {
 @media (max-width: 560px) {
     .card { padding: 18px; }
     .form-grid { grid-template-columns: 1fr; }
+    .experiment-tabs { grid-template-columns: 1fr; }
+    .experiment-tab-panel { min-height: 0; }
     .data-distribution-panel {
         align-items: stretch;
         flex-direction: column;

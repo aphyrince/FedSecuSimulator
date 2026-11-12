@@ -89,7 +89,6 @@
             .map((checkbox) => Number(checkbox.value)),
           defense: row.querySelector('.round-defense').value,
           defense_enabled: row.querySelector('.round-defense-enabled').checked,
-          round_type: document.getElementById('round-type').value,
           dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
           dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
         }));
@@ -110,7 +109,6 @@
               .map((checkbox) => Number(checkbox.value)),
             defense: row.querySelector('.round-defense').value,
             defense_enabled: row.querySelector('.round-defense-enabled').checked,
-            round_type: document.getElementById('round-type').value,
             dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
             dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
           }),

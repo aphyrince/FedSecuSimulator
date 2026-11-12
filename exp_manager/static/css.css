@@ -5,10 +5,65 @@
     background: #f3f5f9;
 }
 body {
-    max-width: 1180px;
+    max-width: 1440px;
     margin: 0 auto;
     padding: 32px 24px 48px;
 }
+.dashboard-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 310px;
+    align-items: start;
+    gap: 20px;
+}
+.dashboard-layout > .card { min-width: 0; }
+.status-sidebar {
+    position: sticky;
+    top: 20px;
+    display: grid;
+    gap: 16px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+}
+.status-sidebar .card {
+    min-width: 0;
+    padding: 18px;
+    margin: 0;
+}
+.status-card h2 { margin-bottom: 12px; font-size: 19px; }
+#server-status {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+.client-status-table {
+    max-height: min(58vh, 620px);
+    overflow: auto;
+}
+.client-status-table table {
+    table-layout: fixed;
+    font-size: 12px;
+}
+.client-status-table th,
+.client-status-table td {
+    padding: 8px 4px;
+    overflow-wrap: anywhere;
+}
+.client-status-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8fafc;
+}
+.client-status-table th:first-child,
+.client-status-table td:first-child { width: 28px; }
+.client-status-table th:nth-child(2),
+.client-status-table td:nth-child(2) { width: 68px; }
+.client-status-table th:nth-child(3),
+.client-status-table td:nth-child(3) { width: 55px; }
+.client-status-table .ok,
+.client-status-table .off { font-size: 11px; }
 .card {
     background: white;
     border: 1px solid #e6eaf2;
@@ -232,12 +287,22 @@ pre {
 }
 @media (max-width: 820px) {
     body { padding: 20px 14px 36px; }
+    .dashboard-layout { grid-template-columns: minmax(0, 1fr); }
+    .status-sidebar {
+        position: static;
+        order: -1;
+        grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        max-height: none;
+        overflow: visible;
+    }
+    .client-status-table { max-height: 300px; }
     .page-header { align-items: flex-start; flex-direction: column; }
     .process-actions { justify-content: flex-start; }
     .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
     .card { padding: 18px; }
+    .status-sidebar { grid-template-columns: minmax(0, 1fr); }
     .form-grid { grid-template-columns: 1fr; }
     .experiment-tabs { grid-template-columns: 1fr; }
     .experiment-tab-panel { min-height: 0; }

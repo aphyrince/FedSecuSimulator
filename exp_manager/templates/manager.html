@@ -19,7 +19,7 @@
       </div>
     </header>
 
-    <main>
+    <main class="dashboard-layout">
       <section class="card">
         <div class="section-heading">
           <div>
@@ -167,25 +167,31 @@
       <pre id="experiment-log"></pre>
       </section>
 
-    <div class="card">
-      <h2>중앙 서버</h2>
-      <p id="server-status">확인 중...</p>
-    </div>
+      <aside class="status-sidebar" aria-label="시스템 상태">
+        <section class="card status-card">
+          <p class="eyebrow">System status</p>
+          <h2>중앙 서버</h2>
+          <p id="server-status">확인 중...</p>
+        </section>
 
-    <div class="card">
-      <h2>클라이언트</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>주소</th>
-            <th>프로세스</th>
-            <th>API 응답</th>
-          </tr>
-        </thead>
-        <tbody id="clients"></tbody>
-      </table>
-    </div>
+        <section class="card status-card">
+          <p class="eyebrow">Workers</p>
+          <h2>클라이언트</h2>
+          <div class="client-status-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>주소</th>
+                  <th>프로세스</th>
+                  <th>API</th>
+                </tr>
+              </thead>
+              <tbody id="clients"></tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
     </main>
 
     <script defer src="{{ url_for('static', filename='js/round-config.js') }}"></script>

@@ -36,10 +36,14 @@
 
       function buildRoundEditor(savedConfigs = []) {
         const isDlgExperiment = document.getElementById('experiment-type').value === 'dlg';
+        const usePretrainedGlobalModel =
+          isDlgExperiment && document.getElementById('use-pretrained-global-model').checked;
         const normalCount = isDlgExperiment
           ? Number(document.getElementById('dlg-training-rounds').value) || 5
           : Number(document.getElementById('rounds').value) || 1;
-        const count = Math.max(1, normalCount + (isDlgExperiment ? 1 : 0));
+        const count = usePretrainedGlobalModel
+          ? 1
+          : Math.max(1, normalCount + (isDlgExperiment ? 1 : 0));
         const defaultParticipation = Number(document.getElementById('participation').value);
         const defaultAttack = document.getElementById('attack').checked;
         const defaultDefense = document.getElementById('defense').value;

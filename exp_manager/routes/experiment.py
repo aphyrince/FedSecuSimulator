@@ -6,7 +6,7 @@ experiment_bp = Blueprint("experiment", __name__)
 
 @experiment_bp.get("/api/experiment/config")
 def get_config():
-    return jsonify(current_app.extensions["experiment_manager"].get_config())
+    return jsonify(current_app.extensions["experiment_manager"].get_public_config())
 
 
 @experiment_bp.post("/api/experiment/config")
@@ -14,7 +14,8 @@ def set_config():
     """웹 UI의 실험 옵션을 검증한 뒤 실행 서비스에 저장한다."""
     try:
         manager = current_app.extensions["experiment_manager"]
-        return jsonify(manager.update_config(request.get_json(silent=True) or {}))
+        manager.update_config(request.get_json(silent=True) or {})
+        return jsonify(manager.get_public_config())
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 400
 

@@ -147,7 +147,8 @@ label {
     pointer-events: none;
 }
 input,
-select {
+select,
+textarea {
     width: 100%;
     box-sizing: border-box;
     min-height: 40px;
@@ -156,6 +157,22 @@ select {
     border-radius: 8px;
     background: white;
     color: #172033;
+}
+textarea {
+    resize: vertical;
+    min-height: 150px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.pretrained-model-settings {
+    display: grid;
+    gap: 14px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid #dce7f7;
+    border-radius: 10px;
+    background: #f8faff;
 }
 input[type="checkbox"] {
     width: 18px;

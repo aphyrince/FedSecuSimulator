@@ -16,6 +16,11 @@ async function saveExperimentConfig() {
       num_rounds: Number(document.getElementById('rounds').value),
       experiment_type: document.getElementById('experiment-type').value,
       dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
+      use_pretrained_global_model: document.getElementById('use-pretrained-global-model').checked,
+      pretrained_model_format: document.getElementById('pretrained-model-format').value,
+      pretrained_model_data: document.getElementById('use-pretrained-global-model').checked
+        ? document.getElementById('pretrained-model-data').value
+        : '',
       dlg_iterations: Number(document.getElementById('dlg-iterations').value),
       dlg_client_id: document.getElementById('dlg-client').value === ''
         ? null
@@ -47,8 +52,12 @@ async function saveExperimentConfig() {
       round_configs: readRoundConfigs(),
     }),
   });
+  const savedConfig = await response.json();
   if (!response.ok) {
-    alert((await response.json()).error);
+    alert(savedConfig.error || '설정을 저장하지 못했습니다.');
+  } else if (savedConfig.pretrained_global_model_loaded) {
+    document.getElementById('pretrained-model-status').textContent =
+      `전역 모델 체크포인트를 저장했습니다 (버전 ${savedConfig.pretrained_global_model_version ?? 0}).`;
   }
   await refresh();
 }
@@ -131,6 +140,14 @@ const roundConfigsByExperimentType = {
         roundConfigsByExperimentType[document.getElementById('experiment-type').value] =
           config.round_configs || [];
         document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
+        document.getElementById('use-pretrained-global-model').checked =
+          Boolean(config.use_pretrained_global_model);
+        document.getElementById('pretrained-model-format').value =
+          config.pretrained_model_format || 'json';
+        document.getElementById('pretrained-model-status').textContent =
+          config.pretrained_global_model_loaded
+            ? `저장된 전역 모델 체크포인트를 사용합니다 (버전 ${config.pretrained_global_model_version ?? 0}). 새 모델 데이터를 입력하면 교체됩니다.`
+            : 'JSON은 weights 객체가 포함된 small_cnn_v1 체크포인트를 지원합니다. CSV/텍스트는 숫자 가중치를 모델 파라미터 순서로 입력합니다.';
         document.getElementById('dlg-iterations').value = config.dlg_iterations ?? 2;
         document.getElementById('dlg-client').value =
           config.dlg_client_id === null || config.dlg_client_id === undefined
@@ -171,6 +188,8 @@ const roundConfigsByExperimentType = {
 
       function updateConditionalSettings() {
         const dlgEnabled = document.getElementById('experiment-type').value === 'dlg';
+        const usePretrainedModel =
+          dlgEnabled && document.getElementById('use-pretrained-global-model').checked;
         const roundsSetting = document.getElementById('rounds-setting');
         roundsSetting.classList.toggle('reserved-hidden', dlgEnabled);
         roundsSetting.setAttribute('aria-hidden', String(dlgEnabled));
@@ -187,6 +206,19 @@ const roundConfigsByExperimentType = {
           !dlgEnabled || !dlgDefenseEnabled;
         document.getElementById('dlg-noise').disabled =
           !dlgEnabled || !dlgDefenseEnabled;
+        const dlgTrainingRoundsSetting =
+          document.getElementById('dlg-training-rounds-setting');
+        dlgTrainingRoundsSetting.classList.toggle(
+          'reserved-hidden',
+          usePretrainedModel,
+        );
+        dlgTrainingRoundsSetting.setAttribute(
+          'aria-hidden',
+          String(usePretrainedModel),
+        );
+        document.getElementById('dlg-training-rounds').disabled = usePretrainedModel;
+        document.getElementById('pretrained-model-settings').hidden = !usePretrainedModel;
+        updatePretrainedModelInput();
 
         const attackEnabled = document.getElementById('attack').checked;
         document.getElementById('attack-settings').hidden = !attackEnabled;
@@ -201,10 +233,48 @@ const roundConfigsByExperimentType = {
           !attackEnabled || dlgEnabled;
       }
 
+      function updatePretrainedModelInput() {
+        const textFormat =
+          document.getElementById('pretrained-model-format').value === 'text';
+        document.getElementById('pretrained-model-file-setting').hidden = textFormat;
+        document.getElementById('pretrained-model-text-setting').hidden = !textFormat;
+      }
+
       loadExperimentConfig();
       document.getElementById('dlg-defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('use-pretrained-global-model').addEventListener('change', () => {
+        if (document.getElementById('use-pretrained-global-model').checked) {
+          roundConfigsByExperimentType.dlg = readRoundConfigs();
+        }
+        updateConditionalSettings();
+        buildRoundEditor(roundConfigsByExperimentType.dlg);
+      });
       document.getElementById('attack').addEventListener('change', updateConditionalSettings);
       document.getElementById('defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('pretrained-model-format').addEventListener(
+        'change',
+        updatePretrainedModelInput,
+      );
+      document.getElementById('pretrained-model-file').addEventListener('change', async (event) => {
+        const [file] = event.target.files;
+        if (!file) {
+          return;
+        }
+        if (file.size > 32 * 1024 * 1024) {
+          alert('전역 모델 파일은 32 MiB 이하여야 합니다.');
+          event.target.value = '';
+          return;
+        }
+        document.getElementById('pretrained-model-data').value = await file.text();
+        const extension = file.name.split('.').pop().toLowerCase();
+        if (['json', 'csv', 'txt'].includes(extension)) {
+          document.getElementById('pretrained-model-format').value =
+            extension === 'txt' ? 'text' : extension;
+        }
+        updatePretrainedModelInput();
+        document.getElementById('pretrained-model-status').textContent =
+          `${file.name} 파일을 읽었습니다. 설정 저장을 눌러 모델 체크포인트를 등록하세요.`;
+      });
       document.getElementById('round-configs').addEventListener('change', (event) => {
         const row = event.target.closest('tr');
         if (row) updateRoundVisibility(row);

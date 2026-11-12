@@ -9,6 +9,7 @@ from common.training import TrainingSettings
 from common.model import model_config, finite_number, positive_int
 
 from exp_manager.services.experiment_output import save_experiment_outputs, save_round_result
+from exp_manager.services.pretrained_model import parse_pretrained_global_model
 from exp_manager.services.rest_client import RestClient
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
@@ -38,6 +39,9 @@ class ExperimentManager:
             "seed": 42,
             "num_rounds": 10,
             "dlg_training_rounds": 5,
+            "use_pretrained_global_model": False,
+            "pretrained_global_model": None,
+            "pretrained_model_format": "json",
             "dlg_client_id": None,
             "participation_rate": 1.0,
             "malicious_clients": [0, 1],
@@ -75,6 +79,16 @@ class ExperimentManager:
         with self.lock:
             return dict(self.config)
 
+    def get_public_config(self) -> dict:
+        config = self.get_config()
+        pretrained_model = config.pop("pretrained_global_model", None)
+        config["pretrained_global_model_loaded"] = pretrained_model is not None
+        if pretrained_model:
+            config["pretrained_global_model_version"] = pretrained_model.get(
+                "model_version", 0
+            )
+        return config
+
     @staticmethod
     def _load_dlg_env() -> dict:
         env_path = PROJECT_ROOT_PATH / "exp_manager" / ".env"
@@ -104,6 +118,8 @@ class ExperimentManager:
                 "seed",
                 "num_rounds",
                 "dlg_training_rounds",
+                "use_pretrained_global_model",
+                "pretrained_model_format",
                 "dlg_client_id",
                 "participation_rate",
                 "malicious_clients",
@@ -128,6 +144,31 @@ class ExperimentManager:
             previous = self.config
             self.config = {**previous, **{key: payload[key] for key in allowed if key in payload}}
             try:
+                use_pretrained = bool(
+                    payload.get(
+                        "use_pretrained_global_model",
+                        previous["use_pretrained_global_model"],
+                    )
+                )
+                self.config["use_pretrained_global_model"] = use_pretrained
+                model_data = payload.get("pretrained_model_data") or ""
+                if not isinstance(model_data, str):
+                    raise ValueError("전역 모델 데이터는 텍스트 형식이어야 합니다.")
+                if not use_pretrained:
+                    self.config["pretrained_global_model"] = None
+                elif model_data.strip():
+                    self.config["pretrained_global_model"] = (
+                        parse_pretrained_global_model(
+                            model_data,
+                            payload.get(
+                                "pretrained_model_format",
+                                self.config["pretrained_model_format"],
+                            ),
+                            self.config["model_config"],
+                        )
+                    )
+                elif previous.get("pretrained_global_model") is None:
+                    raise ValueError("전역 모델 파일을 선택하거나 모델 값을 입력하세요.")
                 self._validate_config()
             except (ValueError, TypeError, KeyError):
                 self.config = previous
@@ -137,6 +178,13 @@ class ExperimentManager:
     def _validate_config(self):
         TrainingSettings.from_dict(self.config)
         model_config(self.config.get("model_config"))
+        if self.config["pretrained_model_format"] not in {"json", "csv", "text"}:
+            raise ValueError("지원하지 않는 전역 모델 입력 형식입니다.")
+        if (
+            self.config["use_pretrained_global_model"]
+            and self.config["pretrained_global_model"] is None
+        ):
+            raise ValueError("DLG 실험에 사용할 사전 전역 모델이 등록되지 않았습니다.")
         finite_number(self.config["round_timeout"], "round_timeout", positive=True)
         positive_int(self.config["seed"], "seed", 0)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", self.config["experiment_id"]):
@@ -169,6 +217,8 @@ class ExperimentManager:
 
     def total_round_count(self) -> int:
         if self.config.get("experiment_type") == "dlg":
+            if self.config.get("use_pretrained_global_model"):
+                return 1
             return int(self.config.get("dlg_training_rounds", 5)) + 1
         return int(self.config.get("num_rounds", 1))
 
@@ -177,7 +227,7 @@ class ExperimentManager:
             return {
                 **self.state,
                 "malicious_clients_by_round": dict(self.malicious_clients_by_round),
-                "config": dict(self.config),
+                "config": self.get_public_config(),
                 "total_rounds": self.total_round_count(),
                 "dlg_participant_by_round": dict(self.dlg_participant_by_round),
                 "running": self.state["status"] == "running",
@@ -309,9 +359,15 @@ class ExperimentManager:
         self.dlg_participant_by_round[round_id] = client["client_id"]
         self.dlg_images_by_round[round_id] = []
         round_config["dlg_image_shape"] = [3, 32, 32]
+        server_round_config = round_config
+        if self.config.get("use_pretrained_global_model"):
+            server_round_config = {
+                **round_config,
+                "initial_global_model": self.config["pretrained_global_model"],
+            }
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
-            round_config,
+            server_round_config,
         )
         return self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/dlg/participant",
@@ -519,7 +575,12 @@ class ExperimentManager:
         if config.get("experiment_type") == "dlg":
             round_type = (
                 "dlg"
-                if round_id == int(config.get("dlg_training_rounds", 5)) + 1
+                if round_id
+                == (
+                    1
+                    if config.get("use_pretrained_global_model")
+                    else int(config.get("dlg_training_rounds", 5)) + 1
+                )
                 else "federated"
             )
         return {

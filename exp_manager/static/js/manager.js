@@ -258,15 +258,12 @@ function applyExperimentTemplate(templateName) {
 
         const attackEnabled = document.getElementById('attack').checked;
         document.getElementById('attack-settings').hidden = !attackEnabled;
-        if (!attackEnabled && !dlgEnabled) {
-          document.getElementById('defense-enabled').checked = false;
-        }
 
         const defenseEnabled = document.getElementById('defense-enabled').checked;
         document.getElementById('defense-method-setting').hidden =
-          !defenseEnabled || !attackEnabled || dlgEnabled;
+          !defenseEnabled || dlgEnabled;
         document.getElementById('defense-enabled').disabled =
-          !attackEnabled || dlgEnabled;
+          dlgEnabled;
       }
 
       function updatePretrainedModelInput() {

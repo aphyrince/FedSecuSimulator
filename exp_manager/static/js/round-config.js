@@ -1,13 +1,15 @@
       function updateRoundVisibility(row) {
-        const attackEnabled = row.querySelector('.round-attack').checked;
         const defenseEnabled = row.querySelector('.round-defense-enabled').checked;
         const defenseToggle = row.querySelector('.round-defense-enabled');
         const defenseMethod = row.querySelector('.round-defense');
 
-        defenseToggle.disabled = !attackEnabled;
-        defenseMethod.disabled = !attackEnabled || !defenseEnabled;
+        defenseToggle.disabled = false;
+        defenseMethod.disabled = !defenseEnabled;
 
-        row.classList.toggle('non-attack-round', !attackEnabled);
+        row.classList.toggle(
+          'non-attack-round',
+          !row.querySelector('.round-attack').checked,
+        );
       }
 
       function updateRoundExecutionButtons(roundResults = []) {

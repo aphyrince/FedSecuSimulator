@@ -1,9 +1,11 @@
 """고정 업데이트를 반환하는 대체 함수로 프로세스 내부 Flask 경로를 검증한다. 실제 CNN은 학습하지 않는다."""
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -106,8 +108,10 @@ class ApiTests(unittest.TestCase):
         manager = ProcessManager("127.0.0.1", 2, 5000, 5101)
         manager.server_process = RunningProcess()
         manager.client_processes = {0: RunningProcess(), 1: RunningProcess()}
+        status_timeouts = {}
 
         def get_live_status(url, timeout):
+            status_timeouts[url] = timeout
             if ":5000/" in url:
                 return {
                     "current_round": 2,
@@ -123,9 +127,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status["server"]["details"]["current_round"], 2)
         self.assertEqual(status["clients"][1]["details"]["training"]["status"], "training")
         self.assertTrue(status["clients"][1]["round_activity"]["selected"])
+        self.assertEqual(status_timeouts["http://127.0.0.1:5000/api/status"], 2.0)
+        self.assertEqual(status_timeouts["http://127.0.0.1:5101/api/status"], 0.3)
 
     def test_full_normal_and_attack_rounds_through_flask_with_stubs(self):
         starts = []
+        submission_before_all_training_finished = []
         outcomes = {}
         for attack in (False, True):
             server = create_server_app("127.0.0.1", 5000)
@@ -148,6 +155,9 @@ class ApiTests(unittest.TestCase):
                       "local_epochs": 3, "batch_size": 7, "learning_rate": 0.02}
             self.assertEqual(api.post("/api/round/config", json=config).status_code, 200)
             initial = decode_weights(server.extensions["global_model"]["weights"])
+            training_state = {"completed": 0}
+            training_lock = threading.Lock()
+            all_training_finished = threading.Event()
 
             def fake_train(global_model, dataset_range, training_config, round_id, client_id, **kwargs):
                 self.assertEqual((training_config["local_epochs"], training_config["batch_size"], training_config["learning_rate"]), (3, 7, 0.02))
@@ -155,18 +165,31 @@ class ApiTests(unittest.TestCase):
                 base = decode_weights(global_model["weights"])
                 delta = {key: torch.full_like(value, 1.0 if client_id == 0 else 3.0) for key, value in base.items()}
                 update = make_update(global_model, client_id, delta, samples=2 if client_id == 0 else 6)
-                return {"local_model": update["local_model"], "model_delta": encode_weights(delta),
-                        "num_samples": update["num_samples"], "training_loss": 1.0,
-                        "base_model_hash": weights_hash(base), "base_model_version": global_model["model_version"],
-                        "dataset_fingerprint": f"train-{client_id}", "training_config": training_config}
+                result = {"local_model": update["local_model"], "model_delta": encode_weights(delta),
+                          "num_samples": update["num_samples"], "training_loss": 1.0,
+                          "base_model_hash": weights_hash(base), "base_model_version": global_model["model_version"],
+                          "dataset_fingerprint": f"train-{client_id}", "training_config": training_config}
+                with training_lock:
+                    training_state["completed"] += 1
+                    if training_state["completed"] == 2:
+                        all_training_finished.set()
+                return result
 
             def dispatch(url, payload, timeout=3.0):
                 parsed = urlsplit(url)
-                response = (api if parsed.netloc == "server" else clients[parsed.netloc]).post(parsed.path, json=payload)
+                if parsed.path == "/api/model/global":
+                    global_delivery_barrier.wait(timeout=5)
+                target = server.test_client() if parsed.netloc == "server" else clients[parsed.netloc]
+                response = target.post(parsed.path, json=payload)
                 if response.status_code >= 400:
                     raise ValueError(f"{parsed.path}: {response.get_json()}")
+                if parsed.netloc == "server" and parsed.path.endswith("/updates"):
+                    submission_before_all_training_finished.append(
+                        not all_training_finished.is_set()
+                    )
                 return response.get_json()
 
+            global_delivery_barrier = threading.Barrier(2)
             evaluation = {"accuracy": 0.25, "loss": 1.0, "num_test_samples": 10, "correct_predictions": 2,
                           "metrics": {}, "dataset_fingerprint": "same-test"}
             with patch("clients.services.training_service.train_local_model", side_effect=fake_train), \
@@ -191,6 +214,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(starts[0][2], starts[1][2])
         self.assertEqual(starts[0][2], starts[2][2])
         self.assertEqual(outcomes[False]["initial_model_hash"], outcomes[True]["initial_model_hash"])
+        self.assertEqual(submission_before_all_training_finished, [False] * 4)
 
     def test_failed_evaluation_returns_failure_without_fake_accuracy_or_model_commit(self):
         app = create_server_app("127.0.0.1", 5000)
@@ -217,6 +241,76 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(api.post("/api/rounds/1/updates", json=update).status_code, 409)
         app.extensions["update_deadlines"] = {1: (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}
         self.assertEqual(api.post("/api/rounds/1/updates", json=update).status_code, 408)
+
+    def test_concurrent_submissions_match_server_and_manager_status(self):
+        client_count = 10
+        app = create_server_app("127.0.0.1", 5000)
+        model = vector_model()
+        app.extensions["global_model"] = model
+        app.extensions["selected_clients"][1] = list(range(client_count))
+        app.extensions["available_clients"][1] = list(range(client_count))
+        app.extensions["round_progress"].update(
+            round=1,
+            phase="training",
+            config={"participation_rate": 1.0, "attack_enabled": False},
+        )
+        app.extensions["clients"] = {
+            client_id: {
+                "client_id": client_id,
+                "url": f"http://127.0.0.1:{5101 + client_id}",
+            }
+            for client_id in range(client_count)
+        }
+        app.extensions["update_submission_status"][1] = {
+            client_id: {"status": "waiting"} for client_id in range(client_count)
+        }
+        updates = [
+            make_update(model, client_id, {"w": [1.0, 2.0]}, samples=2)
+            for client_id in range(client_count)
+        ]
+
+        def submit(update):
+            with app.test_client() as client:
+                response = client.post("/api/rounds/1/updates", json=update)
+                return response.status_code, response.get_json()
+
+        with ThreadPoolExecutor(max_workers=client_count) as executor:
+            responses = list(executor.map(submit, updates))
+
+        self.assertTrue(all(status == 200 for status, _ in responses))
+        stored_updates = app.extensions["round_updates"][1]
+        self.assertEqual(set(stored_updates), set(range(client_count)))
+
+        api = app.test_client()
+        server_status = api.get("/api/status").get_json()
+        submission_status = api.get("/api/rounds/1/updates/status").get_json()
+        self.assertEqual(server_status["updates_received"], len(stored_updates))
+        self.assertEqual(
+            submission_status["submitted_clients"], sorted(stored_updates)
+        )
+        self.assertTrue(
+            all(
+                item["update_status"] == "received"
+                for item in server_status["client_activity"]
+            )
+        )
+
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        manager = ProcessManager("127.0.0.1", 0, 5000, 5101)
+        manager.server_process = RunningProcess()
+        with patch.object(
+            manager.rest_client,
+            "get_json",
+            side_effect=lambda _url, timeout: api.get("/api/status").get_json(),
+        ):
+            manager_status = manager.status()
+        self.assertEqual(
+            manager_status["server"]["details"]["updates_received"],
+            len(stored_updates),
+        )
 
     def test_manager_propagates_settings_rolls_back_invalid_values_and_respects_candidates(self):
         class Processes:

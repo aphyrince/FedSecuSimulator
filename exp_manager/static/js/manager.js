@@ -102,7 +102,17 @@ function applyExperimentTemplate(templateName) {
   roundConfigsByExperimentType.federated = readRoundConfigs();
 }
 
-      async function refresh() {
+      let refreshPromise = null;
+      function refresh() {
+        if (!refreshPromise) {
+          refreshPromise = refreshStatus().finally(() => {
+            refreshPromise = null;
+          });
+        }
+        return refreshPromise;
+      }
+
+      async function refreshStatus() {
         const response = await fetch('/api/status');
         const data = await response.json();
         const serverDetails = data.server.details || {};
@@ -129,10 +139,13 @@ function applyExperimentTemplate(templateName) {
         const deadline = serverDetails.update_deadline
           ? new Date(serverDetails.update_deadline).toLocaleTimeString()
           : '—';
+        const receivedUpdates = Number.isFinite(serverDetails.updates_received)
+          ? serverDetails.updates_received
+          : '조회 불가';
         document.getElementById('server-live-status').textContent = [
           `진행: ${phaseLabels[serverDetails.round_phase] || serverDetails.round_phase || '—'}`,
           `현재 라운드: ${serverDetails.current_round ?? '—'} · 모델 버전: ${serverDetails.global_model_version ?? '—'}`,
-          `참여 가능: ${serverDetails.available_count ?? 0} · 선정: ${serverDetails.selected_count ?? 0} · 업데이트 수신: ${serverDetails.updates_received ?? 0}`,
+          `참여 가능: ${serverDetails.available_count ?? 0} · 선정: ${serverDetails.selected_count ?? 0} · 업데이트 수신: ${receivedUpdates}`,
           `참여율: ${participation} · 제출 마감: ${deadline}`,
           `공격: ${serverDetails.attack_enabled ? 'ON' : 'OFF'} · 방어: ${serverDetails.defense_enabled ? serverDetails.defense : 'OFF'}`,
           `지연 대상: ${(serverDetails.delayed_clients || []).join(', ') || '없음'}`,

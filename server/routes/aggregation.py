@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from functools import wraps
@@ -350,66 +351,43 @@ def start_round(round_id: int):
     global_model = current_app.extensions.get("global_model")
     if global_model is None:
         return jsonify(error="Global model is not initialized"), 409
-    for client in selected_clients:
-        try:
-            client_id = client["client_id"]
-            round_context = {
-                "selected": True,
-                "malicious": attack_enabled and client_id in malicious_ids,
-                "delayed": client_id in delay_ids,
-            }
-            _post_json(
-                f"{client['url']}/api/model/global",
-                {**global_model, "round": round_id, "training_config": {**TrainingSettings.from_dict(config).to_dict(), "seed": seed},
-                 "update_deadline": deadline.isoformat(), "round_context": round_context},
-                timeout=max(0.001, (deadline - datetime.now(timezone.utc)).total_seconds()),
-            )
-        except (OSError, ValueError):
-            current_app.logger.warning(
-                "Global model delivery failed: client_id=%s", client["client_id"]
-            )
+
+    training_config = {
+        **TrainingSettings.from_dict(config).to_dict(),
+        "seed": seed,
+    }
+    server_url = config.get(
+        "server_url",
+        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+    )
+
+    def deliver_global_model(client):
+        client_id = client["client_id"]
+        round_context = {
+            "selected": True,
+            "malicious": attack_enabled and client_id in malicious_ids,
+            "delayed": client_id in delay_ids,
+        }
+        return _post_json(
+            f"{client['url']}/api/model/global",
+            {
+                **global_model,
+                "round": round_id,
+                "training_config": training_config,
+                "update_deadline": deadline.isoformat(),
+                "round_context": round_context,
+            },
+            timeout=max(
+                0.001, (deadline - datetime.now(timezone.utc)).total_seconds()
+            ),
+        )
 
     accepted_clients = [
         client for client in selected_clients if client["client_id"] not in delay_ids
     ]
 
-    updates = []
-    malicious_local_updates = {}
-
-    for client in accepted_clients:
-        try:
-            is_malicious = attack_enabled and client["client_id"] in malicious_ids
-            local_response = _post_json(
-                f"{client['url']}/api/round/execute",
-                {
-                    "round": round_id,
-                    "malicious": is_malicious,
-                    "attack_enabled": attack_enabled,
-                },
-            )
-            if is_malicious:
-                malicious_local_updates[client["client_id"]] = local_response
-                continue
-            _post_json(
-                f"{client['url']}/api/round/submit",
-                {
-                    "round": round_id,
-                    "malicious": False,
-                    "attack_enabled": attack_enabled,
-                    "server_url": config.get(
-                        "server_url",
-                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-                    ),
-                },
-            )
-        except (OSError, ValueError):
-            current_app.logger.warning(
-                "Client update generation failed: client_id=%s",
-                client["client_id"],
-            )
-
-    # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
-    if attack_enabled:
+    def submit_colluded_updates(malicious_local_updates):
+        # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
         for client in accepted_clients:
             sender_id = client["client_id"]
             if sender_id not in malicious_local_updates:
@@ -434,42 +412,95 @@ def start_round(round_id: int):
                         peer_id,
                     )
 
-    # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+        # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+        for client in accepted_clients:
+            client_id = client["client_id"]
+            if client_id not in malicious_local_updates:
+                continue
+            peer_updates = [
+                peer_update
+                for peer_id, peer_update in malicious_local_updates.items()
+                if peer_id != client_id
+            ]
+            try:
+                colluded_update = _post_json(
+                    f"{client['url']}/api/round/collusion",
+                    {
+                        "round": round_id,
+                        "own_update": malicious_local_updates[client_id],
+                        "peer_updates": peer_updates,
+                    },
+                )
+                _post_json(
+                    f"{client['url']}/api/round/submit",
+                    {
+                        "round": round_id,
+                        "malicious": True,
+                        "attack_enabled": attack_enabled,
+                        "colluded_update": colluded_update,
+                        "server_url": server_url,
+                    },
+                )
+            except (OSError, ValueError):
+                current_app.logger.warning(
+                    "Malicious collusion failed: client_id=%s", client_id
+                )
+
+    with ThreadPoolExecutor(max_workers=len(selected_clients)) as executor:
+        deliveries = {
+            executor.submit(deliver_global_model, client): client
+            for client in selected_clients
+        }
+        for future in as_completed(deliveries):
+            client = deliveries[future]
+            try:
+                future.result()
+            except (OSError, ValueError):
+                current_app.logger.warning(
+                    "Global model delivery failed: client_id=%s",
+                    client["client_id"],
+                )
+
+    malicious_local_updates = {}
     for client in accepted_clients:
         client_id = client["client_id"]
-        if client_id not in malicious_local_updates:
-            continue
-        peer_updates = [
-            peer_update
-            for peer_id, peer_update in malicious_local_updates.items()
-            if peer_id != client_id
-        ]
+        is_malicious = attack_enabled and client_id in malicious_ids
         try:
-            colluded_update = _post_json(
-                f"{client['url']}/api/round/collusion",
+            local_response = _post_json(
+                f"{client['url']}/api/round/execute",
                 {
                     "round": round_id,
-                    "own_update": malicious_local_updates[client_id],
-                    "peer_updates": peer_updates,
-                },
-            )
-            _post_json(
-                f"{client['url']}/api/round/submit",
-                {
-                    "round": round_id,
-                    "malicious": True,
+                    "malicious": is_malicious,
                     "attack_enabled": attack_enabled,
-                    "colluded_update": colluded_update,
-                    "server_url": config.get(
-                        "server_url",
-                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-                    ),
                 },
             )
         except (OSError, ValueError):
             current_app.logger.warning(
-                "Malicious collusion failed: client_id=%s", client_id
+                "Client update generation failed: client_id=%s", client_id
             )
+            continue
+
+        if is_malicious:
+            malicious_local_updates[client_id] = local_response
+            continue
+
+        try:
+            _post_json(
+                f"{client['url']}/api/round/submit",
+                {
+                    "round": round_id,
+                    "malicious": False,
+                    "attack_enabled": attack_enabled,
+                    "server_url": server_url,
+                },
+            )
+        except (OSError, ValueError):
+            current_app.logger.warning(
+                "Client update submission failed: client_id=%s", client_id
+            )
+
+    if attack_enabled:
+        submit_colluded_updates(malicious_local_updates)
 
     received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
     updates = list(received_response.values())

@@ -163,7 +163,11 @@ class ProcessManager:
     def status(self) -> dict:
         server_url = f"http://{self.host}:{self.server_port}"
         server_running = self.server_process is not None and self.server_process.poll() is None
-        server_details = self._get_live_status(server_url) if server_running else None
+        server_details = (
+            self._get_live_status(server_url, timeout=2.0)
+            if server_running
+            else None
+        )
         activity_by_client = {
             item["client_id"]: item
             for item in (server_details or {}).get("client_activity", [])
@@ -195,9 +199,9 @@ class ProcessManager:
             "clients": clients,
         }
 
-    def _get_live_status(self, url: str) -> dict | None:
+    def _get_live_status(self, url: str, timeout: float = 0.3) -> dict | None:
         try:
-            return self.rest_client.get_json(url + "/api/status", timeout=0.3)
+            return self.rest_client.get_json(url + "/api/status", timeout=timeout)
         except (URLError, TimeoutError, OSError, ValueError):
             return None
 

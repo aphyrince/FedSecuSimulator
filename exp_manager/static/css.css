@@ -134,6 +134,32 @@ h2, h3 { margin-top: 0; }
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 16px;
 }
+.experiment-templates {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 20px;
+    padding: 16px 18px;
+    border: 1px solid #dce7f7;
+    border-radius: 12px;
+    background: #f5f8fe;
+}
+.experiment-templates h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+}
+.experiment-templates p {
+    margin: 0;
+    color: #64748b;
+    font-size: 13px;
+}
+.template-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.template-buttons button { margin: 0; }
 label {
     display: flex;
     flex-direction: column;
@@ -324,6 +350,10 @@ pre {
     .experiment-tabs { grid-template-columns: 1fr; }
     .experiment-tab-panel { min-height: 0; }
     .data-distribution-panel {
+        align-items: stretch;
+        flex-direction: column;
+    }
+    .experiment-templates {
         align-items: stretch;
         flex-direction: column;
     }

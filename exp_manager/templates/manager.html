@@ -46,6 +46,18 @@
             </select>
           </label>
         </div>
+        <div id="experiment-templates" class="experiment-templates">
+          <div>
+            <h3>연합학습 환경 템플릿</h3>
+            <p>선택한 조건을 모든 라운드에 적용합니다. 지연 템플릿은 클라이언트 2·5·8을 지정하며 제출 제한 시간은 변경하지 않습니다.</p>
+          </div>
+          <div class="template-buttons">
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('baseline')">기준</button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('delay')">지연</button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('partial')">부분 참여</button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('label-bias')">레이블 편향</button>
+          </div>
+        </div>
 
         <input id="experiment-type" type="hidden" value="federated" />
         <nav class="experiment-tabs" role="tablist" aria-label="실험 유형">

@@ -74,6 +74,34 @@ const roundConfigsByExperimentType = {
   dlg: [],
 };
 
+function applyExperimentTemplate(templateName) {
+  const templates = {
+    baseline: { participation: 1, delayClients: [], distribution: 'iid' },
+    delay: { participation: 1, delayClients: [2, 5, 8], distribution: 'iid' },
+    partial: { participation: 0.5, delayClients: [], distribution: 'iid' },
+    'label-bias': { participation: 1, delayClients: [], distribution: 'non_iid' },
+  };
+  const template = templates[templateName];
+  if (!template || document.getElementById('experiment-type').value !== 'federated') {
+    return;
+  }
+
+  const savedConfigs = document.querySelector('#round-configs tr')
+    ? readRoundConfigs()
+    : roundConfigsByExperimentType.federated;
+  buildRoundEditor(savedConfigs);
+
+  document.getElementById('participation').value = template.participation;
+  document.getElementById('distribution').value = template.distribution;
+  document.querySelectorAll('#round-configs tr').forEach((row) => {
+    row.querySelector('.round-participation').value = template.participation;
+    row.querySelectorAll('.round-delay').forEach((checkbox) => {
+      checkbox.checked = template.delayClients.includes(Number(checkbox.value));
+    });
+  });
+  roundConfigsByExperimentType.federated = readRoundConfigs();
+}
+
       async function refresh() {
         const response = await fetch('/api/status');
         const data = await response.json();
@@ -207,6 +235,7 @@ const roundConfigsByExperimentType = {
         document.getElementById('federated-tab').setAttribute('aria-selected', String(!dlgEnabled));
         document.getElementById('dlg-tab').classList.toggle('active', dlgEnabled);
         document.getElementById('dlg-tab').setAttribute('aria-selected', String(dlgEnabled));
+        document.getElementById('experiment-templates').hidden = dlgEnabled;
 
         const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
         document.getElementById('dlg-noise-setting').hidden =

@@ -1,0 +1,185 @@
+async function control(path) {
+  const response = await fetch(path, { method: 'POST' });
+  if (!response.ok) {
+    const result = await response.json();
+    alert(result.error || '요청을 처리하지 못했습니다.');
+  }
+  await refresh();
+}
+
+async function saveExperimentConfig() {
+  const response = await fetch('/api/experiment/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      experiment_id: document.getElementById('experiment-id').value,
+      num_rounds: Number(document.getElementById('rounds').value),
+      experiment_type: document.getElementById('experiment-type').value,
+      dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
+      dlg_iterations: Number(document.getElementById('dlg-iterations').value),
+      dlg_client_id: document.getElementById('dlg-client').value === ''
+        ? null
+        : Number(document.getElementById('dlg-client').value),
+      participation_rate: Number(document.getElementById('participation').value),
+      seed: Number(document.getElementById('seed').value),
+      local_epochs: Number(document.getElementById('local-epochs').value),
+      batch_size: Number(document.getElementById('batch-size').value),
+      learning_rate: Number(document.getElementById('learning-rate').value),
+      device: document.getElementById('device').value,
+      round_timeout: Number(document.getElementById('round-timeout').value),
+      max_train_samples: document.getElementById('max-train-samples').value === ''
+        ? null
+        : Number(document.getElementById('max-train-samples').value),
+      max_test_samples: document.getElementById('max-test-samples').value === ''
+        ? null
+        : Number(document.getElementById('max-test-samples').value),
+      data_distribution: document.getElementById('distribution').value,
+      round_type: document.getElementById('round-type').value,
+      dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
+      dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
+      defense: document.getElementById('defense').value,
+      defense_enabled: document.getElementById('defense-enabled').checked,
+      attack_enabled: document.getElementById('attack').checked,
+      malicious_clients: document
+        .getElementById('malicious')
+        .value.split(',')
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isInteger(value)),
+      round_configs: readRoundConfigs(),
+    }),
+  });
+  if (!response.ok) {
+    alert((await response.json()).error);
+  }
+  await refresh();
+}
+
+function stateText(value) {
+  return value ? '<span class="ok">정상</span>' : '<span class="off">종료됨</span>';
+}
+
+      async function refresh() {
+        const response = await fetch('/api/status');
+        const data = await response.json();
+        document.getElementById('server-status').innerHTML =
+          `${data.server.url} · 프로세스: ${stateText(data.server.running)} · API: ${stateText(data.server.reachable)}`;
+        document.getElementById('clients').innerHTML = data.clients
+          .map(
+            (client) => `
+        <tr>
+          <td>${client.client_id}</td>
+          <td><a href="${client.url}/health" target="_blank">${client.url}</a></td>
+          <td>${stateText(client.running)}</td>
+          <td>${stateText(client.reachable)}</td>
+        </tr>
+      `,
+          )
+          .join('');
+
+        const experimentResponse = await fetch('/api/experiment/status');
+        const experiment = await experimentResponse.json();
+        document.getElementById('experiment-status').textContent =
+          `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.total_rounds} · ${experiment.message}`;
+        const maliciousSelections = experiment.malicious_clients_by_round || {};
+        const selectedRounds = Object.entries(maliciousSelections)
+          .filter(([, ids]) => ids.length)
+          .map(([round, ids]) => `라운드 ${round}: 클라이언트 ${ids.join(', ')}`);
+        document.getElementById('malicious-clients-status').textContent =
+          selectedRounds.length ? selectedRounds.join(' · ') : '선정된 악성 클라이언트: 없음';
+        const dlgSelections = experiment.dlg_participant_by_round || {};
+        const dlgRounds = Object.entries(dlgSelections)
+          .map(([round, clientId]) => `라운드 ${round}: 클라이언트 ${clientId}`);
+        document.getElementById('dlg-participant-status').textContent =
+          dlgRounds.length ? dlgRounds.join(' · ') : 'DLG 참가 클라이언트: 없음';
+        document.getElementById('experiment-log').textContent = JSON.stringify(
+          experiment.round_results.slice(-5),
+          null,
+          2,
+        );
+        updateRoundExecutionButtons(experiment.round_results || []);
+      }
+
+      async function refreshDataStatus() {
+        const response = await fetch('/api/data/status');
+        const data = await response.json();
+        document.getElementById('data-status').textContent =
+          `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+      }
+
+      async function distributeData() {
+        const response = await fetch('/api/data/distribute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seed: 42 }),
+        });
+        if (!response.ok) {
+          alert((await response.json()).error);
+        }
+        await refreshDataStatus();
+      }
+
+      async function loadExperimentConfig() {
+        const response = await fetch('/api/experiment/config');
+        const config = await response.json();
+        document.getElementById('experiment-id').value = config.experiment_id;
+        document.getElementById('rounds').value = config.num_rounds;
+        document.getElementById('experiment-type').value = config.experiment_type || 'federated';
+        document.getElementById('dlg-training-rounds').value = config.dlg_training_rounds ?? 5;
+        document.getElementById('dlg-iterations').value = config.dlg_iterations ?? 2;
+        document.getElementById('dlg-client').value =
+          config.dlg_client_id === null || config.dlg_client_id === undefined
+            ? ''
+            : config.dlg_client_id;
+        document.getElementById('participation').value = config.participation_rate;
+        document.getElementById('seed').value = config.seed;
+          document.getElementById('local-epochs').value = config.local_epochs;
+          document.getElementById('batch-size').value = config.batch_size;
+          document.getElementById('learning-rate').value = config.learning_rate;
+          document.getElementById('device').value = config.device;
+          document.getElementById('round-timeout').value = config.round_timeout;
+          document.getElementById('max-train-samples').value = config.max_train_samples ?? '';
+          document.getElementById('max-test-samples').value = config.max_test_samples ?? '';
+        document.getElementById('distribution').value = config.data_distribution;
+        document.getElementById('round-type').value = config.round_type || 'federated';
+        document.getElementById('dlg-noise').value = config.dlg_noise_sigma ?? 0;
+        document.getElementById('dlg-defense-enabled').checked = Boolean(config.dlg_defense_enabled);
+        document.getElementById('dlg-noise').disabled = !Boolean(config.dlg_defense_enabled);
+          document.getElementById('defense').value = config.defense === 'none' ? 'norm_clipping' : config.defense;
+        document.getElementById('defense-enabled').checked = Boolean(config.defense_enabled);
+        document.getElementById('attack').checked = config.attack_enabled;
+        document.getElementById('malicious').value = config.malicious_clients.join(',');
+        buildRoundEditor(config.round_configs || []);
+        updateConditionalSettings();
+      }
+
+      function updateConditionalSettings() {
+        const dlgEnabled = document.getElementById('experiment-type').value === 'dlg';
+        document.getElementById('dlg-settings').hidden = !dlgEnabled;
+
+        const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
+        document.getElementById('dlg-noise-setting').hidden =
+          !dlgEnabled || !dlgDefenseEnabled;
+        document.getElementById('dlg-noise').disabled =
+          !dlgEnabled || !dlgDefenseEnabled;
+
+        const attackEnabled = document.getElementById('attack').checked;
+        document.getElementById('attack-settings').hidden = !attackEnabled;
+
+        const defenseEnabled = document.getElementById('defense-enabled').checked;
+        document.getElementById('defense-method-setting').hidden = !defenseEnabled;
+      }
+
+      loadExperimentConfig();
+      document.getElementById('experiment-type').addEventListener('change', updateConditionalSettings);
+      document.getElementById('dlg-defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('attack').addEventListener('change', updateConditionalSettings);
+      document.getElementById('defense-enabled').addEventListener('change', updateConditionalSettings);
+      document.getElementById('round-configs').addEventListener('change', (event) => {
+        const row = event.target.closest('tr');
+        if (row) updateRoundVisibility(row);
+      });
+      refresh();
+      refreshDataStatus();
+      setInterval(() => {
+        if (!document.hidden) refresh();
+      }, 3000);

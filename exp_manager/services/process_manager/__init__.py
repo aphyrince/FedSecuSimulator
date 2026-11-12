@@ -162,28 +162,44 @@ class ProcessManager:
 
     def status(self) -> dict:
         server_url = f"http://{self.host}:{self.server_port}"
+        server_running = self.server_process is not None and self.server_process.poll() is None
+        server_details = self._get_live_status(server_url) if server_running else None
+        activity_by_client = {
+            item["client_id"]: item
+            for item in (server_details or {}).get("client_activity", [])
+        }
         clients = []
         for client_id in range(self.client_count):
             port = self.client_base_port + client_id
             url = f"http://{self.host}:{port}"
             process = self.client_processes.get(client_id)
+            running = process is not None and process.poll() is None
+            details = self._get_live_status(url) if running else None
             clients.append(
                 {
                     "client_id": client_id,
                     "url": url,
-                    "running": process is not None and process.poll() is None,
-                    "reachable": self._is_reachable(url),
+                    "running": running,
+                    "reachable": details is not None,
+                    "details": details or {},
+                    "round_activity": activity_by_client.get(client_id, {}),
                 }
             )
         return {
             "server": {
                 "url": server_url,
-                "running": self.server_process is not None
-                and self.server_process.poll() is None,
-                "reachable": self._is_reachable(server_url),
+                "running": server_running,
+                "reachable": server_details is not None,
+                "details": server_details or {},
             },
             "clients": clients,
         }
+
+    def _get_live_status(self, url: str) -> dict | None:
+        try:
+            return self.rest_client.get_json(url + "/api/status", timeout=0.3)
+        except (URLError, TimeoutError, OSError, ValueError):
+            return None
 
     def client_url(self, client_id: int) -> str:
         return f"http://{self.host}:{self.client_base_port + client_id}"

@@ -209,11 +209,34 @@ def start_round(round_id: int):
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
     config["round"] = round_id
+    progress = current_app.extensions.setdefault(
+        "round_progress", {"round": None, "phase": "idle"}
+    )
+    progress.update(
+        round=round_id,
+        phase="checking_availability",
+        message="클라이언트 참여 가능 여부를 확인하고 있습니다.",
+        config={
+            key: config.get(key)
+            for key in (
+                "participation_rate",
+                "attack_enabled",
+                "malicious_clients",
+                "delay_clients",
+                "defense_enabled",
+                "defense",
+                "max_train_samples",
+            )
+        },
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
     if not current_app.extensions.get("dataset_range", {}).get("ranges"):
+        progress.update(phase="failed", message="테스트 데이터가 분배되지 않았습니다.")
         return jsonify(error="Distribute the test dataset before starting"), 409
 
     registered = list(current_app.extensions.get("clients", {}).values())
     if not registered:
+        progress.update(phase="failed", message="등록된 클라이언트가 없습니다.")
         return jsonify(error="No registered clients"), 409
 
     availability_responses = []
@@ -241,6 +264,7 @@ def start_round(round_id: int):
     ]
 
     if not available_clients:
+        progress.update(phase="failed", message="참여 가능한 클라이언트가 없습니다.")
         return jsonify(error="No available clients"), 409
 
     # 이전 라운드 제출이 재사용되지 않도록 시작 시 해당 라운드 업데이트를 초기화한다.
@@ -265,6 +289,19 @@ def start_round(round_id: int):
         client_id: {"status": "waiting"}
         for client_id in selected_ids
     }
+    attack_enabled = bool(config.get("attack_enabled", False))
+    malicious_ids = set(config.get("malicious_clients", []))
+    delay_ids = set(config.get("delay_clients", []))
+    progress.update(
+        phase="training",
+        message="선정된 클라이언트가 로컬 학습을 진행하고 있습니다.",
+        available_clients=current_app.extensions["available_clients"][round_id],
+        selected_clients=selected_ids,
+        malicious_clients=sorted(malicious_ids.intersection(selected_ids))
+        if attack_enabled
+        else [],
+        delayed_clients=sorted(delay_ids.intersection(selected_ids)),
+    )
 
     timeout_seconds = float(
         config.get("round_timeout", config.get("update_timeout", 900.0))
@@ -315,10 +352,16 @@ def start_round(round_id: int):
         return jsonify(error="Global model is not initialized"), 409
     for client in selected_clients:
         try:
+            client_id = client["client_id"]
+            round_context = {
+                "selected": True,
+                "malicious": attack_enabled and client_id in malicious_ids,
+                "delayed": client_id in delay_ids,
+            }
             _post_json(
                 f"{client['url']}/api/model/global",
                 {**global_model, "round": round_id, "training_config": {**TrainingSettings.from_dict(config).to_dict(), "seed": seed},
-                 "update_deadline": deadline.isoformat()},
+                 "update_deadline": deadline.isoformat(), "round_context": round_context},
                 timeout=max(0.001, (deadline - datetime.now(timezone.utc)).total_seconds()),
             )
         except (OSError, ValueError):
@@ -326,15 +369,12 @@ def start_round(round_id: int):
                 "Global model delivery failed: client_id=%s", client["client_id"]
             )
 
-    delay_ids = set(config.get("delay_clients", []))
     accepted_clients = [
         client for client in selected_clients if client["client_id"] not in delay_ids
     ]
-    malicious_ids = set(config.get("malicious_clients", []))
 
     updates = []
     malicious_local_updates = {}
-    attack_enabled = bool(config.get("attack_enabled", False))
 
     for client in accepted_clients:
         try:
@@ -435,8 +475,10 @@ def start_round(round_id: int):
     updates = list(received_response.values())
     if not updates:
         timer.cancel()
+        progress.update(phase="failed", message="유효한 클라이언트 업데이트를 받지 못했습니다.")
         return jsonify(error="No client updates received"), 409
 
+    progress.update(phase="aggregating", message="업데이트를 집계하고 모델을 평가하고 있습니다.")
     result_payload = {
         **config,
         "selected_clients": selected_ids,
@@ -457,6 +499,10 @@ def execute_result(round_id: int, payload: dict):
     updates = [item for item in payload.get("updates", []) if item.get("valid") is True]
     defense_enabled = bool(payload.get("defense_enabled", payload.get("defense", "none") != "none"))
     defense_type = payload.get("defense", "none")
+    progress = current_app.extensions.setdefault(
+        "round_progress", {"round": round_id, "phase": "idle"}
+    )
+    progress.update(round=round_id, phase="aggregating", message="업데이트를 집계하고 있습니다.")
     try:
         if initial is None:
             raise ValueError("Configure the round before execution")
@@ -474,8 +520,10 @@ def execute_result(round_id: int, payload: dict):
         aggregate = aggregate_coordinate_median if defense_enabled and defense_type == "coordinate_median" else aggregate_fedavg
         aggregated = aggregate(initial, updates)
         updated = aggregated["global_model"]
+        progress.update(phase="evaluating", message="전역 모델을 평가하고 있습니다.")
         evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), payload, round_id)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+        progress.update(phase="failed", message=str(error))
         return jsonify(error=str(error), status="failed", round=round_id), 400
 
     # 텐서 원본은 디스크에 한 번 저장하고 HTTP 응답과 화면 로그에는 요약만 남긴다.
@@ -530,6 +578,7 @@ def execute_result(round_id: int, payload: dict):
     current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
     current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
     current_app.extensions["round_results"].append(result)
+    progress.update(phase="completed", message="라운드 집계와 평가가 완료되었습니다.")
     callback_url = payload.get("experiment_manager_url")
     if callback_url:
         try:

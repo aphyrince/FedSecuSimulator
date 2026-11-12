@@ -4,7 +4,9 @@ from typing import Any
 from copy import deepcopy
 
 from clients.services.local_training import train_local_model
+from clients.services.local_training import count_dataset_samples
 from common.model import weights_hash, weights_norm
+from common.training import TrainingSettings
 
 
 def run_local_training(
@@ -14,12 +16,33 @@ def run_local_training(
 ) -> dict[str, Any]:
     """전역 모델 수신부터 로컬 학습, 업데이트 추출까지 수행한다."""
     round_id = int(global_model.get("round", 1))
+    training_config = {
+        **state.experiment_config,
+        **global_model.get("training_config", {}),
+    }
+    settings = TrainingSettings.from_dict(training_config)
+    assigned_samples = count_dataset_samples(state.dataset_range)
+    total_samples = min(
+        assigned_samples,
+        settings.max_train_samples
+        if settings.max_train_samples is not None
+        else assigned_samples,
+    )
+    round_context = global_model.get("round_context", {})
+    state.begin_training(
+        round_id,
+        total_samples,
+        settings.local_epochs,
+        malicious=bool(round_context.get("malicious", False)),
+        delayed=bool(round_context.get("delayed", False)),
+    )
     training_result = train_local_model(
         global_model=global_model,
         dataset_range=state.dataset_range,
-        training_config={**state.experiment_config, **global_model.get("training_config", {})},
+        training_config=training_config,
         round_id=round_id,
         client_id=client_id,
+        progress_callback=state.update_training_progress,
     )
     extracted_update = {"values": training_result["model_delta"],
                         "update_norm": weights_norm(training_result["model_delta"])}

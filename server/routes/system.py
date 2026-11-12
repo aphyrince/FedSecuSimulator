@@ -19,13 +19,70 @@ def health():
 
 @system_bp.get("/api/status")
 def status():
-    # 라운드 집계 결과 수를 포함한 중앙 서버 상태를 반환한다.
+    extensions = current_app.extensions
+    progress = dict(extensions.get("round_progress", {}))
+    round_id = progress.get("round")
+    clients = list(extensions.get("clients", {}).values())
+    available = extensions.get("available_clients", {}).get(round_id, [])
+    selected = extensions.get("selected_clients", {}).get(round_id, [])
+    config = progress.get("config") or extensions.get("round_config", {})
+    malicious = (
+        set(config.get("malicious_clients", []))
+        if config.get("attack_enabled", False)
+        else set()
+    )
+    delayed = set(config.get("delay_clients", []))
+    responses = {
+        item["client_id"]: item
+        for item in extensions.get("availability_responses", {}).get(round_id, [])
+    }
+    update_status = extensions.get("update_submission_status", {}).get(round_id, {})
+    updates = extensions.get("round_updates", {}).get(round_id, {})
+    client_activity = [
+        {
+            "client_id": client["client_id"],
+            "available": client["client_id"] in available,
+            "selected": client["client_id"] in selected,
+            "malicious": client["client_id"] in malicious and client["client_id"] in selected,
+            "delayed": client["client_id"] in delayed and client["client_id"] in selected,
+            "availability_samples": responses.get(client["client_id"], {}).get("num_samples"),
+            "expected_samples": extensions.get("expected_sample_counts", {})
+            .get(round_id, {})
+            .get(client["client_id"]),
+            "update_status": update_status.get(client["client_id"], {}).get(
+                "status", "not_selected" if client["client_id"] not in selected else "waiting"
+            ),
+            "submitted_samples": updates.get(client["client_id"], {}).get("num_samples"),
+        }
+        for client in clients
+    ]
+    results = extensions.get("round_results", [])
+    last_result = results[-1] if results else {}
     return jsonify(
         status="running",
         host=current_app.config["HOST"],
         port=current_app.config["PORT"],
-        clients_registered=len(current_app.extensions.get("clients", {})),
-        rounds_completed=len(current_app.extensions["round_results"]),
+        clients_registered=len(clients),
+        rounds_completed=len(results),
+        current_round=round_id,
+        round_phase=progress.get("phase", "idle"),
+        round_message=progress.get("message", ""),
+        round_active=bool(extensions.get("round_lock") and extensions["round_lock"].locked()),
+        available_count=len(available),
+        selected_count=len(selected),
+        updates_received=len(updates),
+        malicious_clients=sorted(malicious.intersection(selected)),
+        delayed_clients=sorted(delayed.intersection(selected)),
+        participation_rate=config.get("participation_rate"),
+        attack_enabled=bool(config.get("attack_enabled", False)),
+        defense_enabled=bool(config.get("defense_enabled", False)),
+        defense=config.get("defense", "none"),
+        max_train_samples=config.get("max_train_samples"),
+        update_deadline=extensions.get("update_deadlines", {}).get(round_id),
+        global_model_version=(extensions.get("global_model") or {}).get("model_version"),
+        last_accuracy=last_result.get("accuracy"),
+        last_loss=last_result.get("loss"),
+        client_activity=client_activity,
     )
 
 

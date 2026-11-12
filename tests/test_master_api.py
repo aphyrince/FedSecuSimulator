@@ -15,6 +15,7 @@ from clients.services.client_state import ClientState
 from clients.services.training_service import build_round_update
 from common.model import create_model, decode_weights, encode_weights, weights_hash, weights_norm, SmallCNN
 from exp_manager.services.experiment_runner import ExperimentManager
+from exp_manager.services.process_manager import ProcessManager
 from server.app import create_app as create_server_app
 from test_master_algorithms import make_update, vector_model
 
@@ -35,6 +36,93 @@ class ApiTests(unittest.TestCase):
         state.global_model = vector_model()
         with self.assertRaises(ValueError):
             build_round_update(state, 0, {"round": 1})
+
+    def test_client_status_reports_training_progress_and_remaining_data(self):
+        app = create_client_app(0, 5101)
+        state = app.extensions["client_state"]
+        state.set_dataset_range(
+            {"ranges": [{"file": "train.bin", "start": 0, "end": 12}]}
+        )
+        state.global_model = {
+            "round": 3,
+            "training_config": {"max_train_samples": 8},
+            "round_context": {"selected": True, "malicious": True, "delayed": False},
+        }
+        state.begin_training(3, 8, 2, malicious=True, delayed=False)
+        state.update_training_progress(1, 2, 5, 8)
+
+        status = app.test_client().get("/api/status").get_json()
+        self.assertEqual(status["dataset_samples"], 12)
+        self.assertEqual(status["trainable_samples"], 8)
+        self.assertEqual(status["training"]["processed_samples"], 5)
+        self.assertEqual(status["training"]["remaining_samples"], 3)
+        self.assertTrue(status["malicious"])
+
+    def test_server_status_reports_current_round_participation_and_aggregation(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.extensions["clients"] = {
+            client_id: {"client_id": client_id, "url": f"http://client{client_id}"}
+            for client_id in range(2)
+        }
+        app.extensions["round_progress"] = {
+            "round": 2,
+            "phase": "training",
+            "message": "training",
+        }
+        app.extensions["round_config"] = {
+            "participation_rate": 0.5,
+            "attack_enabled": True,
+            "malicious_clients": [1],
+            "delay_clients": [0],
+            "defense_enabled": True,
+            "defense": "norm_clipping",
+        }
+        app.extensions["available_clients"][2] = [0, 1]
+        app.extensions["availability_responses"][2] = [
+            {"client_id": 0, "num_samples": 12},
+            {"client_id": 1, "num_samples": 9},
+        ]
+        app.extensions["selected_clients"][2] = [0, 1]
+        app.extensions["update_submission_status"][2] = {
+            0: {"status": "waiting"},
+            1: {"status": "received"},
+        }
+        app.extensions["round_updates"][2] = {1: {"num_samples": 9}}
+        app.extensions.setdefault("expected_sample_counts", {})[2] = {0: 12, 1: 9}
+
+        status = app.test_client().get("/api/status").get_json()
+        self.assertEqual(status["round_phase"], "training")
+        self.assertEqual(status["updates_received"], 1)
+        self.assertTrue(status["client_activity"][0]["delayed"])
+        self.assertTrue(status["client_activity"][1]["malicious"])
+        self.assertEqual(status["client_activity"][1]["submitted_samples"], 9)
+        self.assertEqual(status["client_activity"][1]["expected_samples"], 9)
+
+    def test_process_manager_combines_server_and_client_live_status(self):
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        manager = ProcessManager("127.0.0.1", 2, 5000, 5101)
+        manager.server_process = RunningProcess()
+        manager.client_processes = {0: RunningProcess(), 1: RunningProcess()}
+
+        def get_live_status(url, timeout):
+            if ":5000/" in url:
+                return {
+                    "current_round": 2,
+                    "client_activity": [{"client_id": 1, "selected": True}],
+                }
+            client_id = int(url.split(":")[-1].split("/")[0]) - 5101
+            return {"client_id": client_id, "training": {"status": "training"}}
+
+        with patch.object(manager.rest_client, "get_json", side_effect=get_live_status):
+            status = manager.status()
+
+        self.assertTrue(status["server"]["reachable"])
+        self.assertEqual(status["server"]["details"]["current_round"], 2)
+        self.assertEqual(status["clients"][1]["details"]["training"]["status"], "training")
+        self.assertTrue(status["clients"][1]["round_activity"]["selected"])
 
     def test_full_normal_and_attack_rounds_through_flask_with_stubs(self):
         starts = []
@@ -61,7 +149,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(api.post("/api/round/config", json=config).status_code, 200)
             initial = decode_weights(server.extensions["global_model"]["weights"])
 
-            def fake_train(global_model, dataset_range, training_config, round_id, client_id):
+            def fake_train(global_model, dataset_range, training_config, round_id, client_id, **kwargs):
                 self.assertEqual((training_config["local_epochs"], training_config["batch_size"], training_config["learning_rate"]), (3, 7, 0.02))
                 starts.append((attack, client_id, weights_hash(global_model["weights"])))
                 base = decode_weights(global_model["weights"])

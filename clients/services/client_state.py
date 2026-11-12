@@ -20,6 +20,16 @@ class ClientState:
         self.global_models: list[dict[str, Any]] = []
         self.local_training_results: list[dict[str, Any]] = []
         self.latest_local_training: dict[str, Any] = {}
+        self.training_progress: dict[str, Any] = {
+            "status": "idle",
+            "round": None,
+            "epoch": 0,
+            "epochs": 0,
+            "processed_samples": 0,
+            "total_samples": 0,
+            "remaining_samples": 0,
+            "error": None,
+        }
         self.extracted_updates: dict[int, dict[str, Any]] = {}
         self.submitted_updates: dict[int, dict[str, Any]] = {}
         self.expired_rounds: set[int] = set()
@@ -54,6 +64,40 @@ class ClientState:
         self.dataset_range = dataset_range
         return self.dataset_range
 
+    def begin_training(
+        self,
+        round_id: int,
+        total_samples: int,
+        epochs: int,
+        *,
+        malicious: bool,
+        delayed: bool,
+    ) -> None:
+        self.training_progress = {
+            "status": "training",
+            "round": round_id,
+            "epoch": 0,
+            "epochs": epochs,
+            "processed_samples": 0,
+            "total_samples": total_samples,
+            "remaining_samples": total_samples,
+            "error": None,
+            "malicious": malicious,
+            "delayed": delayed,
+        }
+
+    def update_training_progress(
+        self, epoch: int, epochs: int, processed_samples: int, total_samples: int
+    ) -> None:
+        self.training_progress.update(
+            status="training",
+            epoch=epoch,
+            epochs=epochs,
+            processed_samples=processed_samples,
+            total_samples=total_samples,
+            remaining_samples=max(0, total_samples - processed_samples),
+        )
+
     def receive_global_model(self, model: dict[str, Any]) -> dict[str, Any]:
         if self.global_model.get("experiment_id") != model.get("experiment_id") or model.get("round") == 1:
             self.local_training_results.clear()
@@ -67,6 +111,13 @@ class ClientState:
     def save_training(self, training_record: dict[str, Any]) -> None:
         round_id = int(training_record["round"])
         self.latest_local_training = training_record
+        self.training_progress.update(
+            status="trained",
+            epoch=len(training_record.get("history", [])),
+            processed_samples=training_record.get("num_samples", 0),
+            total_samples=training_record.get("num_samples", 0),
+            remaining_samples=0,
+        )
         summary = {key: value for key, value in training_record.items() if key not in ("local_model", "model_delta", "extracted_update")}
         self.local_training_results.append(summary)
         extracted_update = training_record.get("extracted_update")
@@ -90,3 +141,5 @@ class ClientState:
 
     def save_submission(self, round_id: int, submission: dict[str, Any]) -> None:
         self.submitted_updates[round_id] = submission
+        if self.training_progress.get("round") == round_id:
+            self.training_progress["status"] = "submitted"

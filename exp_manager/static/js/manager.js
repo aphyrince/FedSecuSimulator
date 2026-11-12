@@ -105,18 +105,102 @@ function applyExperimentTemplate(templateName) {
       async function refresh() {
         const response = await fetch('/api/status');
         const data = await response.json();
+        const serverDetails = data.server.details || {};
         document.getElementById('server-status').innerHTML =
           `${data.server.url} · 프로세스: ${stateText(data.server.running)} · API: ${stateText(data.server.reachable)}`;
+        const phaseLabels = {
+          idle: '대기',
+          checking_availability: '참여 가능 여부 확인',
+          training: '클라이언트 학습',
+          aggregating: '업데이트 집계',
+          evaluating: '모델 평가',
+          completed: '완료',
+          failed: '실패',
+        };
+        const accuracy = Number.isFinite(serverDetails.last_accuracy)
+          ? `${(serverDetails.last_accuracy * 100).toFixed(2)}%`
+          : '—';
+        const loss = Number.isFinite(serverDetails.last_loss)
+          ? serverDetails.last_loss.toFixed(4)
+          : '—';
+        const participation = Number.isFinite(serverDetails.participation_rate)
+          ? `${Math.round(serverDetails.participation_rate * 100)}%`
+          : '—';
+        const deadline = serverDetails.update_deadline
+          ? new Date(serverDetails.update_deadline).toLocaleTimeString()
+          : '—';
+        document.getElementById('server-live-status').textContent = [
+          `진행: ${phaseLabels[serverDetails.round_phase] || serverDetails.round_phase || '—'}`,
+          `현재 라운드: ${serverDetails.current_round ?? '—'} · 모델 버전: ${serverDetails.global_model_version ?? '—'}`,
+          `참여 가능: ${serverDetails.available_count ?? 0} · 선정: ${serverDetails.selected_count ?? 0} · 업데이트 수신: ${serverDetails.updates_received ?? 0}`,
+          `참여율: ${participation} · 제출 마감: ${deadline}`,
+          `공격: ${serverDetails.attack_enabled ? 'ON' : 'OFF'} · 방어: ${serverDetails.defense_enabled ? serverDetails.defense : 'OFF'}`,
+          `지연 대상: ${(serverDetails.delayed_clients || []).join(', ') || '없음'}`,
+          `최근 정확도: ${accuracy} · 손실: ${loss}`,
+          serverDetails.round_message || '',
+        ].join('\n');
         document.getElementById('clients').innerHTML = data.clients
           .map(
-            (client) => `
+            (client) => {
+              const details = client.details || {};
+              const activity = client.round_activity || {};
+              const serverRound = serverDetails.current_round;
+              const training = details.training || {};
+              const trainingMatchesRound = training.round === serverRound;
+              const trainingStatus = trainingMatchesRound
+                ? (activity.update_status === 'received' || activity.update_status === 'expired'
+                  ? activity.update_status
+                  : training.status)
+                : activity.selected
+                  ? 'waiting'
+                  : 'not_selected';
+              const epochProgress = trainingMatchesRound && training.epochs
+                ? ` · epoch ${training.epoch}/${training.epochs}`
+                : '';
+              const trainedSamples = trainingMatchesRound
+                ? training.processed_samples || 0
+                : 0;
+              const totalSamples = trainingMatchesRound
+                ? training.total_samples || 0
+                : activity.expected_samples ?? (
+                  serverDetails.max_train_samples === null ||
+                  serverDetails.max_train_samples === undefined
+                    ? details.dataset_samples ?? 0
+                    : Math.min(
+                      details.dataset_samples ?? 0,
+                      serverDetails.max_train_samples,
+                    )
+                );
+              const remainingSamples = trainingMatchesRound
+                ? training.remaining_samples || 0
+                : totalSamples;
+              const statusLabels = {
+                idle: '대기',
+                training: '학습 중',
+                trained: '학습 완료',
+                submitted: '제출 완료',
+                received: '제출 완료',
+                waiting: '선정 대기',
+                expired: '마감 초과',
+                not_selected: '미선정',
+                failed: '오류',
+              };
+              const activityValue = (value) => value ? '예' : '아니오';
+              return `
         <tr>
           <td>${client.client_id}</td>
           <td><a href="${client.url}/health" target="_blank">${client.url}</a></td>
           <td>${stateText(client.running)}</td>
           <td>${stateText(client.reachable)}</td>
+          <td>${activity.available === undefined ? activityValue(details.available) : activityValue(activity.available)}</td>
+          <td>${activityValue(Boolean(activity.selected))}</td>
+          <td>${activityValue(Boolean(activity.malicious))}</td>
+          <td>${activityValue(Boolean(activity.delayed))}</td>
+          <td>${statusLabels[trainingStatus] || '—'}${epochProgress}</td>
+          <td>${trainedSamples} / ${totalSamples} · 남음 ${remainingSamples}</td>
         </tr>
-      `,
+      `;
+            },
           )
           .join('');
 

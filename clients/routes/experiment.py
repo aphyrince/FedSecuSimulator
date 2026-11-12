@@ -44,8 +44,10 @@ def receive_global_model():
         state.receive_global_model(payload)
         training_record = run_local_training(state, current_app.config["CLIENT_ID"], payload)
     except TimeoutError as error:
+        state.training_progress.update(status="expired", error=str(error))
         return jsonify(error=str(error)), 408
     except (ValueError, KeyError, TypeError, OSError) as error:
+        state.training_progress.update(status="failed", error=str(error))
         return jsonify(error=str(error)), 400
     finally:
         state.training_lock.release()

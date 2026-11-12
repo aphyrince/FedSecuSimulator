@@ -19,6 +19,17 @@ def create_app(host: str, port: int):
     app.extensions["server"] = None
     app.extensions["experiment_config"] = {}
     app.extensions["round_results"] = []
+    app.extensions["round_progress"] = {
+        "round": None,
+        "phase": "idle",
+        "message": "",
+        "config": {},
+        "started_at": None,
+        "available_clients": [],
+        "selected_clients": [],
+        "malicious_clients": [],
+        "delayed_clients": [],
+    }
     app.extensions["dataset_range"] = {}
     app.extensions["clients"] = {}
     app.extensions["round_config"] = {}

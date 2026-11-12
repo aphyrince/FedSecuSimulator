@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from typing import Callable
 from common.data import CifarRangeDataset
 from common.model import build_model, decode_weights, encode_weights, weights_hash, weights_norm
 from common.training import TrainingSettings
@@ -14,7 +15,8 @@ def count_dataset_samples(dataset_range: dict) -> int:
 
 
 def train_local_model(global_model: dict, dataset_range: dict, training_config: dict,
-                      round_id: int, client_id: int) -> dict:
+                      round_id: int, client_id: int,
+                      progress_callback: Callable[[int, int, int, int], None] | None = None) -> dict:
     settings = TrainingSettings.from_dict(training_config)
     dataset = CifarRangeDataset(dataset_range, settings.max_train_samples)
     deadline = global_model.get("update_deadline")
@@ -26,9 +28,10 @@ def train_local_model(global_model: dict, dataset_range: dict, training_config: 
 
     result = train_core(build_model(global_model), dataset, settings,
                         seed=training_config.get("seed", 42), round_id=round_id, client_id=client_id,
-                        check_cancelled=check_deadline)
+                        check_cancelled=check_deadline,
+                        progress_callback=progress_callback)
     local = {key: deepcopy(value) for key, value in global_model.items()
-             if key not in ("weights", "training_config", "update_deadline")}
+             if key not in ("weights", "training_config", "update_deadline", "round_context")}
     local.update(weights=encode_weights(result.weights), model_version=int(global_model["model_version"]) + 1)
     return {"local_model": local, "model_delta": encode_weights(result.delta), "num_samples": result.num_samples,
             "training_loss": result.history[-1]["loss"], "training_accuracy": result.history[-1]["accuracy"],

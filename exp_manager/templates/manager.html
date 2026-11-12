@@ -303,11 +303,12 @@
         <pre id="experiment-log"></pre>
       </section>
 
-      <aside class="status-sidebar" aria-label="시스템 상태">
+      <section class="live-monitoring" aria-label="실시간 시스템 상태">
         <section class="card status-card">
           <p class="eyebrow">System status</p>
           <h2>중앙 서버</h2>
           <p id="server-status">확인 중...</p>
+          <pre id="server-live-status" class="live-status">라운드 정보를 확인 중...</pre>
         </section>
 
         <section class="card status-card">
@@ -321,13 +322,19 @@
                   <th>주소</th>
                   <th>프로세스</th>
                   <th>API</th>
+                  <th>참여 가능</th>
+                  <th>선정</th>
+                  <th>악성</th>
+                  <th>지연</th>
+                  <th>상태</th>
+                  <th>진행 / 전체 · 잔여 표본 (현재 epoch)</th>
                 </tr>
               </thead>
               <tbody id="clients"></tbody>
             </table>
           </div>
         </section>
-      </aside>
+      </section>
     </main>
 
     <script defer src="{{ url_for('static', filename='js/round-config.js') }}"></script>

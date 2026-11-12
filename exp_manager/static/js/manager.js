@@ -44,6 +44,9 @@ async function saveExperimentConfig() {
       defense: document.getElementById('defense').value,
       defense_enabled: document.getElementById('defense-enabled').checked,
       attack_enabled: document.getElementById('attack').checked,
+      attack_scale: document.getElementById('attack-scale').value.trim() === ''
+        ? -5
+        : Number(document.getElementById('attack-scale').value),
       malicious_clients: document
         .getElementById('malicious')
         .value.split(',')
@@ -169,6 +172,7 @@ const roundConfigsByExperimentType = {
           document.getElementById('defense').value = config.defense === 'none' ? 'norm_clipping' : config.defense;
         document.getElementById('defense-enabled').checked = Boolean(config.defense_enabled);
         document.getElementById('attack').checked = config.attack_enabled;
+        document.getElementById('attack-scale').value = config.attack_scale ?? -5;
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
         updateConditionalSettings();

@@ -411,7 +411,6 @@ def start_round(round_id: int):
                     "round": round_id,
                     "own_update": malicious_local_updates[client_id],
                     "peer_updates": peer_updates,
-                    "attack_scale": config.get("attack_scale", -5.0),
                 },
             )
             _post_json(

@@ -90,6 +90,10 @@
                 <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
                 <small>공격 ON 시 후보 중 2개를 실험 관리자가 선정합니다.</small>
               </label>
+              <label>업데이트 공격 배율
+                <input id="attack-scale" type="number" step="any" value="-5" />
+                <small>악성 클라이언트가 평균 업데이트에 곱할 값입니다.</small>
+              </label>
             </div>
             <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
             <div id="defense-method-setting" class="conditional-setting">

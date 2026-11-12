@@ -136,15 +136,58 @@ class ApiTests(unittest.TestCase):
                 return [{"client_id": i, "ip": "127.0.0.1", "port": 5101 + i, "url": f"http://client{i}"} for i in range(10)]
 
         manager = ExperimentManager(Processes(), self.root, 10)
-        manager.update_config({"learning_rate": 0.02, "local_epochs": 4, "malicious_clients": [2, 7], "attack_enabled": True})
+        manager.update_config({
+            "learning_rate": 0.02,
+            "local_epochs": 4,
+            "malicious_clients": [2, 7],
+            "attack_enabled": True,
+            "attack_scale": -2.5,
+        })
         config = manager.get_config()
         round_config = manager._round_config(1, config)
         self.assertEqual((round_config["learning_rate"], round_config["local_epochs"]), (0.02, 4))
         with patch.object(manager.rest_client, "post_json", return_value={}):
             self.assertEqual(manager.prepare_malicious_clients(1, round_config, config), [2, 7])
+            self.assertEqual(manager.rest_client.post_json.call_count, 2)
+            self.assertTrue(
+                all(
+                    call.args[1]["attack_scale"] == -2.5
+                    for call in manager.rest_client.post_json.call_args_list
+                )
+            )
         with self.assertRaises(ValueError):
             manager.update_config({"learning_rate": -1})
+        with self.assertRaises(ValueError):
+            manager.update_config({"attack_scale": float("nan")})
         self.assertEqual(manager.get_config()["learning_rate"], 0.02)
+        self.assertEqual(manager.get_config()["attack_scale"], -2.5)
+
+    def test_client_uses_scale_received_from_manager_for_collusion(self):
+        app = create_client_app(0, 5101)
+        api = app.test_client()
+        configured = api.post(
+            "/api/round/malicious-peers",
+            json={"round": 1, "peers": [], "attack_scale": -2.5},
+        )
+        self.assertEqual(configured.status_code, 200)
+
+        own_update = {"client_id": 0, "round": 1}
+        with patch(
+            "clients.routes.experiment.collude_updates",
+            side_effect=lambda model, own, peers, scale, minimum: {"scale": scale},
+        ) as collude:
+            response = api.post(
+                "/api/round/collusion",
+                json={
+                    "round": 1,
+                    "own_update": own_update,
+                    "peer_updates": [{"client_id": 1}],
+                    "attack_scale": -99,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["scale"], -2.5)
+        self.assertEqual(collude.call_args.args[3], -2.5)
 
     def test_callback_does_not_advance_until_server_request_returns(self):
         manager = ExperimentManager(object(), self.root, 10)

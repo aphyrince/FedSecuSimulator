@@ -6,7 +6,7 @@ from clients.services.dlg_service import add_gaussian_noise, compute_single_imag
 from clients.services.dlg_data_loader import load_image, load_label
 from pathlib import Path
 from clients.services.collusion import collude_updates
-from common.model import MODEL_FORMAT
+from common.model import MODEL_FORMAT, finite_number
 
 experiment_bp = Blueprint("client_experiment", __name__)
 PROJECT_ROOT_PATH = Path(__file__).resolve().parents[2]
@@ -118,8 +118,11 @@ def collude_round_updates():
     try:
         if own_update.get("client_id") != current_app.config["CLIENT_ID"] or own_update.get("round") != round_id:
             raise ValueError("Collusion identity mismatch")
+        attack_scale = state.attack_scale_by_round.get(
+            round_id, payload.get("attack_scale", -5.0)
+        )
         return jsonify(collude_updates(state.global_model, own_update, peer_updates,
-                                        payload.get("attack_scale", -5.0), payload.get("min_colluders", 2)))
+                                        attack_scale, payload.get("min_colluders", 2)))
     except (ValueError, TypeError, KeyError) as error:
         return jsonify(error=str(error)), 400
 
@@ -133,12 +136,17 @@ def receive_malicious_peers():
     if not isinstance(peers, list):
         return jsonify(error="peers must be a list"), 400
     state = current_app.extensions["client_state"]
-    state.set_malicious_peers(round_id, peers)
+    try:
+        attack_scale = finite_number(payload.get("attack_scale", -5.0), "attack_scale")
+        state.set_malicious_peers(round_id, peers, attack_scale)
+    except (ValueError, TypeError) as error:
+        return jsonify(error=str(error)), 400
     return jsonify(
         status="received",
         client_id=current_app.config["CLIENT_ID"],
         round=round_id,
         peers=peers,
+        attack_scale=attack_scale,
     )
 
 

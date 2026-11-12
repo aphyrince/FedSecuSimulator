@@ -193,6 +193,7 @@ class ExperimentManager:
             raise ValueError("실험 ID는 영문·숫자·밑줄·하이픈으로 입력하세요.")
         if not 0 < self.config["participation_rate"] <= 1:
             raise ValueError("participation_rate는 0 초과 1 이하이어야 합니다.")
+        finite_number(self.config["attack_scale"], "attack_scale")
         if self.config["num_rounds"] < 1:
             raise ValueError("num_rounds는 1 이상이어야 합니다.")
         if self.config["dlg_training_rounds"] < 1:
@@ -480,6 +481,7 @@ class ExperimentManager:
                     "round": round_id,
                     "malicious": True,
                     "peers": peers,
+                    "attack_scale": round_config.get("attack_scale", -5.0),
                 },
             )
         return selected

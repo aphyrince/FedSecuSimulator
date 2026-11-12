@@ -4,7 +4,7 @@ from typing import Any
 import threading
 from pathlib import Path
 import torch
-from common.model import decode_weights, encode_weights
+from common.model import decode_weights, encode_weights, finite_number
 
 
 class ClientState:
@@ -24,14 +24,18 @@ class ClientState:
         self.submitted_updates: dict[int, dict[str, Any]] = {}
         self.expired_rounds: set[int] = set()
         self.malicious_peers: dict[int, list[dict[str, Any]]] = {}
+        self.attack_scale_by_round: dict[int, float] = {}
         self.received_malicious_updates: dict[int, dict[int, dict[str, Any]]] = {}
         self.dlg_gradient: dict[str, Any] = {}
         self.dlg_round = 0
 
     def set_malicious_peers(
-        self, round_id: int, peers: list[dict[str, Any]]
+        self, round_id: int, peers: list[dict[str, Any]], attack_scale: float = -5.0
     ) -> list[dict[str, Any]]:
         """해당 라운드의 다른 악성 클라이언트 주소를 저장한다."""
+        self.attack_scale_by_round[round_id] = finite_number(
+            attack_scale, "attack_scale"
+        )
         self.malicious_peers[round_id] = peers
         return peers
 

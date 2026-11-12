@@ -311,6 +311,14 @@ Invoke-RestMethod -Method Post `
 
 이미 학습된 모델을 사용하려면 `사전 정상학습 전역모델을 사용`을 선택하고 JSON 체크포인트를 업로드하거나 붙여넣습니다. CSV/텍스트 입력은 현재 `small_cnn_v1` 모델의 `state_dict` 파라미터 순서와 일치하는 숫자 가중치 목록이어야 합니다. 설정 저장 시 모델 구조와 가중치를 검증하며, DLG는 사전 학습 라운드 없이 해당 체크포인트로 시작합니다.
 
+내부자 협력공격/정상 연합학습 실험이 완료되면 최종 전역 모델이 아래 파일로 별도 저장됩니다.
+
+```text
+results/<experiment_id>/global_model_for_dlg.json
+```
+
+이 파일을 DLG 실험에서 재사용하려면 DLG 탭에서 `사전 정상학습 전역모델을 사용`을 선택하고, 입력 형식을 `JSON 체크포인트`로 둔 뒤 위 파일을 선택하고 설정을 저장합니다. 저장한 체크포인트로 바로 DLG를 실행하며 사전 연합학습 라운드는 생략됩니다.
+
 DLG 관련 API:
 
 - 참가 클라이언트 지정: `POST /api/dlg/participant`
@@ -330,9 +338,10 @@ results/<experiment_id>/rounds/round_<번호>.json
 results/<experiment_id>/rounds.csv
 results/<experiment_id>/results.json
 results/<experiment_id>/accuracy.csv
+results/<experiment_id>/global_model_for_dlg.json
 ```
 
-DLG 결과에는 원본 이미지, 복원 이미지, MSE, 방어 설정, 노이즈 sigma가 포함됩니다.
+연합학습 완료 시 `global_model_for_dlg.json`이 생성됩니다. DLG 결과에는 원본 이미지, 복원 이미지, MSE, 방어 설정, 노이즈 sigma가 포함됩니다.
 
 ## 팀 구현 로직 교체
 

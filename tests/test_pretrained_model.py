@@ -10,7 +10,18 @@ from server.app import create_app
 
 
 class UnusedProcessManager:
-    pass
+    def server_url(self):
+        return "http://127.0.0.1:5000"
+
+
+class FinalModelRestClient:
+    def __init__(self, model):
+        self.model = model
+
+    def get_json(self, url, timeout):
+        assert url.endswith("/api/model/global")
+        assert timeout == 60.0
+        return self.model
 
 
 def small_model():
@@ -91,3 +102,42 @@ def test_server_accepts_pretrained_checkpoint_as_initial_global_model():
         assert app.extensions["global_model"]["weights"] == model["weights"]
         assert app.extensions["global_model"]["experiment_id"] == "pretrained-dlg-test"
         assert "initial_global_model" not in app.extensions["round_config"]
+
+
+def test_federated_completion_exports_final_global_model_for_dlg():
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        model = {**small_model(), "experiment_id": "final-model-export"}
+        manager = ExperimentManager(
+            UnusedProcessManager(), Path(temporary_directory), client_count=10
+        )
+        manager.update_config(
+            {"experiment_id": "final-model-export", "num_rounds": 1}
+        )
+        manager.rest_client = FinalModelRestClient(model)
+        manager.state["status"] = "running"
+
+        manager.record_round_result(
+            {
+                "experiment_id": "final-model-export",
+                "round": 1,
+                "accuracy": 0.75,
+                "loss": 0.5,
+            },
+            advance=True,
+        )
+
+        export_path = (
+            Path(temporary_directory)
+            / "final-model-export"
+            / "global_model_for_dlg.json"
+        )
+        exported = json.loads(export_path.read_text(encoding="utf-8"))
+        assert exported["weights"] == model["weights"]
+        imported = parse_pretrained_global_model(
+            export_path.read_text(encoding="utf-8"),
+            "json",
+            model["model_config"],
+        )
+        assert imported["weights"] == model["weights"]
+        assert manager.state["status"] == "completed"
+        assert manager.state["global_model_export_path"] == str(export_path)

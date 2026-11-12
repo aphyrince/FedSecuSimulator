@@ -1,12 +1,13 @@
 import os
 import random
+import json
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 from common.training import TrainingSettings
-from common.model import model_config, finite_number, positive_int
+from common.model import build_model, model_config, finite_number, positive_int
 
 from exp_manager.services.experiment_output import save_experiment_outputs, save_round_result
 from exp_manager.services.pretrained_model import parse_pretrained_global_model
@@ -72,6 +73,7 @@ class ExperimentManager:
             "log_path": None,
             "result_path": None,
             "chart_path": None,
+            "global_model_export_path": None,
             "message": "",
         }
 
@@ -257,6 +259,7 @@ class ExperimentManager:
                 log_path=None,
                 result_path=None,
                 chart_path=None,
+                global_model_export_path=None,
                 message="실험을 시작했습니다.",
             )
             self.worker = threading.Thread(target=self._run, daemon=True)
@@ -282,6 +285,7 @@ class ExperimentManager:
                 log_path=None,
                 result_path=None,
                 chart_path=None,
+                global_model_export_path=None,
                 message="실험 상태를 초기화했습니다.",
             )
             self.malicious_clients_by_round.clear()
@@ -547,6 +551,9 @@ class ExperimentManager:
             and round_id >= self.total_round_count()
             and self.state["status"] == "running"
         ):
+            export_path = None
+            if config.get("experiment_type") == "federated":
+                export_path = self._save_final_global_model_for_dlg(config)
             log_path, result_path, chart_path = save_experiment_outputs(
                 self.results_dir, config, self.state["round_results"]
             )
@@ -556,9 +563,43 @@ class ExperimentManager:
                     log_path=str(log_path),
                     result_path=str(result_path),
                     chart_path=str(chart_path),
-                    message="실험이 완료되었습니다.",
+                    global_model_export_path=(
+                        str(export_path) if export_path is not None else None
+                    ),
+                    message=(
+                        f"실험이 완료되었습니다. DLG용 전역 모델 저장: {export_path}"
+                        if export_path is not None
+                        else "실험이 완료되었습니다."
+                    ),
                 )
         return round_path
+
+    def _save_final_global_model_for_dlg(self, config: dict) -> Path:
+        """Export the final server model as a JSON checkpoint accepted by DLG settings."""
+        model = self.rest_client.get_json(
+            f"{self.process_manager.server_url()}/api/model/global",
+            timeout=60.0,
+        )
+        if (
+            not isinstance(model, dict)
+            or model.get("experiment_id") != config["experiment_id"]
+        ):
+            raise RuntimeError(
+                "중앙 서버에서 현재 실험의 최종 전역 모델을 가져오지 못했습니다."
+            )
+        build_model(model)
+
+        export_path = (
+            self.results_dir / config["experiment_id"] / "global_model_for_dlg.json"
+        )
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = export_path.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            json.dumps(model, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        temporary_path.replace(export_path)
+        return export_path
 
     def _start_next_round(self, config: dict, round_id: int):
         try:

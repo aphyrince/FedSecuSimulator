@@ -173,8 +173,8 @@
 
       <div class="experiment-actions">
         <button onclick="saveExperimentConfig()">설정 저장</button>
-        <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
-        <button class="stop" onclick="control('/api/experiment/stop')">실험 중단</button>
+        <button id="start-experiment-button" class="start" onclick="control('/api/experiment/start')" disabled>실험 시작</button>
+        <button id="stop-experiment-button" class="stop" onclick="control('/api/experiment/stop')" disabled>실험 중단</button>
         <button onclick="control('/api/experiment/reset')">상태 초기화</button>
       </div>
 

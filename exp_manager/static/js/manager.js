@@ -118,6 +118,9 @@ const roundConfigsByExperimentType = {
       async function refreshDataStatus() {
         const response = await fetch('/api/data/status');
         const data = await response.json();
+        const dataDistributed = Boolean(data.configured);
+        document.getElementById('start-experiment-button').disabled = !dataDistributed;
+        document.getElementById('stop-experiment-button').disabled = !dataDistributed;
         document.getElementById('data-status').textContent =
           `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
       }

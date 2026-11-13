@@ -55,17 +55,34 @@ CONTINUOUS_SECURITY_SCENARIOS = {
         "attack_enabled": True,
         "defense_enabled": False,
     },
-    "defense": {
-        "label": "방어",
+    "defense_norm_clipping": {
+        "label": "방어 · 노름 클리핑",
         "attack_enabled": False,
         "defense_enabled": True,
+        "defense": "norm_clipping",
     },
-    "attack_defense": {
-        "label": "공격 + 방어",
+    "defense_coordinate_median": {
+        "label": "방어 · 좌표별 중앙값",
+        "attack_enabled": False,
+        "defense_enabled": True,
+        "defense": "coordinate_median",
+    },
+    "attack_defense_norm_clipping": {
+        "label": "공격 + 방어 · 노름 클리핑",
         "attack_enabled": True,
         "defense_enabled": True,
+        "defense": "norm_clipping",
+    },
+    "attack_defense_coordinate_median": {
+        "label": "공격 + 방어 · 좌표별 중앙값",
+        "attack_enabled": True,
+        "defense_enabled": True,
+        "defense": "coordinate_median",
     },
 }
+CONTINUOUS_CASE_COUNT = (
+    len(CONTINUOUS_ENVIRONMENTS) * len(CONTINUOUS_SECURITY_SCENARIOS)
+)
 
 
 class ExperimentManager:
@@ -331,7 +348,7 @@ class ExperimentManager:
             return self.status()
 
     def start_continuous_experiments(self, cases: list[dict]) -> dict:
-        """16개 내부자 공격 조합을 별도 ID로 순차 실행한다."""
+        """환경·보안 조합 24개를 별도 ID로 순차 실행한다."""
         with self.lock:
             if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
                 raise RuntimeError("다른 실험이 실행 중입니다.")
@@ -403,8 +420,10 @@ class ExperimentManager:
     def _prepare_continuous_cases(
         self, cases: list[dict], batch_id: str, base_config: dict
     ) -> list[dict]:
-        if not isinstance(cases, list) or len(cases) != 16:
-            raise ValueError("연속 실험은 16개 조합을 모두 포함해야 합니다.")
+        if not isinstance(cases, list) or len(cases) != CONTINUOUS_CASE_COUNT:
+            raise ValueError(
+                f"연속 실험은 {CONTINUOUS_CASE_COUNT}개 조합을 모두 포함해야 합니다."
+            )
         expected_pairs = {
             (environment, security)
             for environment in CONTINUOUS_ENVIRONMENTS
@@ -419,7 +438,9 @@ class ExperimentManager:
             security_key = item.get("security_scenario")
             pair = (environment_key, security_key)
             if pair not in expected_pairs or pair in seen_pairs:
-                raise ValueError("연속 실험은 환경·보안 조합 16개를 한 번씩 포함해야 합니다.")
+                raise ValueError(
+                    "연속 실험은 환경·보안 조합을 한 번씩 모두 포함해야 합니다."
+                )
             seen_pairs.add(pair)
             environment = CONTINUOUS_ENVIRONMENTS[environment_key]
             security = CONTINUOUS_SECURITY_SCENARIOS[security_key]
@@ -454,7 +475,9 @@ class ExperimentManager:
             defense_enabled = item.get("defense_enabled", security["defense_enabled"])
             if not isinstance(attack_enabled, bool) or not isinstance(defense_enabled, bool):
                 raise ValueError(f"{index}번 공격·방어 설정은 참/거짓이어야 합니다.")
-            default_defense = base_config.get("defense", "norm_clipping")
+            default_defense = security.get(
+                "defense", base_config.get("defense", "norm_clipping")
+            )
             if default_defense == "none":
                 default_defense = "norm_clipping"
             defense = item.get("defense", default_defense)
@@ -491,7 +514,7 @@ class ExperimentManager:
                 "defense": defense,
                 "continuous_batch_id": batch_id,
                 "continuous_case_index": index,
-                "continuous_case_count": 16,
+                "continuous_case_count": CONTINUOUS_CASE_COUNT,
                 "continuous_scenario": {
                     "name": name.strip(),
                     "environment_template": environment_key,
@@ -592,7 +615,10 @@ class ExperimentManager:
                         result_path=None,
                         chart_path=None,
                         global_model_export_path=None,
-                        message=f"연속 실험 {index}/16: {config['continuous_scenario']['name']}",
+                        message=(
+                            f"연속 실험 {index}/{len(cases)}: "
+                            f"{config['continuous_scenario']['name']}"
+                        ),
                     )
                     batch_state = self.state["continuous_experiment"]
                     batch_state.update(
@@ -649,7 +675,7 @@ class ExperimentManager:
                         if stopped
                         else "연속 실험이 실패했습니다."
                         if failed
-                        else "연속 실험 16개가 모두 완료되었습니다."
+                        else f"연속 실험 {len(cases)}개가 모두 완료되었습니다."
                     ),
                 )
                 batch_state = self.state["continuous_experiment"]

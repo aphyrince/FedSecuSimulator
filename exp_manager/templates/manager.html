@@ -49,8 +49,8 @@
             aria-controls="continuous-mode-panel"
             onclick="selectRunMode('continuous')"
           >
-            <span>연속 실험 · 16개</span>
-            <small>환경 4종 × 공격·방어 4종 순차 실행</small>
+            <span>연속 실험 · 24개</span>
+            <small>환경 4종 × 보안 시나리오 6종 순차 실행</small>
           </button>
         </nav>
 
@@ -329,7 +329,7 @@
             <div>
               <h3>내부자 협력공격 연속 실험 설정</h3>
               <p>
-                공통 모델·학습 설정은 개별 실험 탭에서 설정한 값을 사용합니다. 아래 16개 행은
+                공통 모델·학습 설정은 개별 실험 탭에서 설정한 값을 사용합니다. 아래 24개 행은
                 각 실험에서 개별로 실행할 라운드 수, 환경, 공격·방어 설정입니다.
               </p>
             </div>
@@ -339,7 +339,7 @@
               class="secondary"
               onclick="resetContinuousCases()"
             >
-              기본 16개 조합으로 복원
+              기본 24개 조합으로 복원
             </button>
           </div>
           <div class="continuous-table-wrap">
@@ -364,7 +364,7 @@
             </table>
           </div>
           <div class="continuous-actions">
-            <p id="continuous-experiment-status">연속 실험 16개가 준비되었습니다.</p>
+            <p id="continuous-experiment-status">연속 실험 24개가 준비되었습니다.</p>
             <div class="continuous-action-buttons">
               <button
                 id="start-continuous-button"
@@ -373,7 +373,7 @@
                 onclick="startContinuousExperiments()"
                 disabled
               >
-                연속 실험 시작 (16개)
+                연속 실험 시작 (24개)
               </button>
               <button
                 id="stop-continuous-button"

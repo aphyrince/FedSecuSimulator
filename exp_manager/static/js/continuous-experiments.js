@@ -8,9 +8,37 @@ const continuousEnvironments = [
 const continuousSecurityScenarios = [
   { id: 'normal', label: '정상', attack: false, defense: false },
   { id: 'attack', label: '공격', attack: true, defense: false },
-  { id: 'defense', label: '방어', attack: false, defense: true },
-  { id: 'attack_defense', label: '공격 + 방어', attack: true, defense: true },
+  {
+    id: 'defense_norm_clipping',
+    label: '방어 · 노름 클리핑',
+    attack: false,
+    defense: true,
+    defenseMethod: 'norm_clipping',
+  },
+  {
+    id: 'defense_coordinate_median',
+    label: '방어 · 좌표별 중앙값',
+    attack: false,
+    defense: true,
+    defenseMethod: 'coordinate_median',
+  },
+  {
+    id: 'attack_defense_norm_clipping',
+    label: '공격 + 방어 · 노름 클리핑',
+    attack: true,
+    defense: true,
+    defenseMethod: 'norm_clipping',
+  },
+  {
+    id: 'attack_defense_coordinate_median',
+    label: '공격 + 방어 · 좌표별 중앙값',
+    attack: true,
+    defense: true,
+    defenseMethod: 'coordinate_median',
+  },
 ];
+const continuousCaseCount =
+  continuousEnvironments.length * continuousSecurityScenarios.length;
 let continuousStartPending = false;
 
 function resetContinuousCases() {
@@ -39,8 +67,8 @@ function resetContinuousCases() {
         <td><input class="continuous-defense-enabled" type="checkbox" ${security.defense ? 'checked' : ''}></td>
         <td>
           <select class="continuous-defense">
-            <option value="norm_clipping" ${defense === 'norm_clipping' ? 'selected' : ''}>노름 클리핑</option>
-            <option value="coordinate_median" ${defense === 'coordinate_median' ? 'selected' : ''}>좌표별 중앙값</option>
+            <option value="norm_clipping" ${(security.defenseMethod || defense) === 'norm_clipping' ? 'selected' : ''}>노름 클리핑</option>
+            <option value="coordinate_median" ${(security.defenseMethod || defense) === 'coordinate_median' ? 'selected' : ''}>좌표별 중앙값</option>
           </select>
         </td>
       </tr>
@@ -52,7 +80,7 @@ function resetContinuousCases() {
     updateContinuousDefenseVisibility(row);
   });
   document.getElementById('continuous-experiment-status').textContent =
-    '연속 실험 16개가 준비되었습니다.';
+    `연속 실험 ${continuousCaseCount}개가 준비되었습니다.`;
 }
 
 function updateContinuousDefenseVisibility(row) {

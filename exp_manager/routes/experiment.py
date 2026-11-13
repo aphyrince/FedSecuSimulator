@@ -31,7 +31,7 @@ def start():
 
 @experiment_bp.post("/api/experiment/continuous/start")
 def start_continuous():
-    """16개 내부자 협력공격 실험을 순차 실행한다."""
+    """24개 내부자 협력공격 실험을 순차 실행한다."""
     try:
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict):

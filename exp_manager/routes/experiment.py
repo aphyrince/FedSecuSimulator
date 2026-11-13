@@ -46,6 +46,20 @@ def start_continuous():
         return jsonify(error=str(exc)), 409
 
 
+@experiment_bp.post("/api/experiment/continuous/dlg/start")
+def start_continuous_dlg():
+    """사용자 체크포인트와 고정 이미지를 사용하는 DLG 3개 실험을 시작한다."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        return jsonify(
+            current_app.extensions[
+                "experiment_manager"
+            ].start_continuous_dlg_experiments(payload)
+        )
+    except (RuntimeError, ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
 @experiment_bp.post("/api/experiment/stop")
 def stop():
     return jsonify(current_app.extensions["experiment_manager"].stop())
@@ -103,6 +117,7 @@ def receive_dlg_original():
             experiment_id=payload["experiment_id"],
             client_id=int(payload["client_id"]),
             image=payload["image"],
+            label=payload.get("label"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return jsonify(error=str(exc)), 400

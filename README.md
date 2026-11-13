@@ -213,6 +213,7 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 - **실험 관리자 종료**: 자식 프로세스를 종료한 뒤 관리자 종료
 - **실험 시작/중단**: 전체 연합학습 또는 DLG 실험 실행
 - **연속 실험**: 개별 실험 탭에서 공통 학습 설정을 정한 뒤 연속 실험 탭에서 24개 설정을 확인·수정하고 한 번에 순차 실행
+- **연속 DLG**: 업로드한 JSON 체크포인트와 32×32 원본 이미지·레이블로 공격, 약한 노이즈 방어, 강한 노이즈 방어를 순차 실행
 
 연속 실험은 기준·지연·부분 참여·레이블 편향 환경 4종과 정상·공격·방어(노름 클리핑/좌표별 중앙값)·
 공격+방어(노름 클리핑/좌표별 중앙값) 시나리오 6종의 전체 24개 조합을 실행합니다.
@@ -223,6 +224,14 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 연속 실험에 적용되지 않습니다. 각 실험은 자동 생성된 서로 다른 ID로
 별도 저장되며, `experiment_info.json`에 해당 실험의 시나리오와 설정이 기록됩니다. 배치 전체 진행 및 결과 경로는
 `results/continuous_runs/<batch_id>/manifest.json`에서 확인할 수 있습니다.
+
+연속 DLG는 사전 연합학습 없이 제출된 학습 체크포인트를 세 사례에서 공유합니다.
+업로드한 원본 이미지는 RGB 32×32로 변환되고 직접 선택한 CIFAR-10 레이블과 함께
+세 사례에 동일하게 전달됩니다. 중앙 서버에는 체크포인트와 그래디언트만 전달하고,
+원본 이미지·레이블은 DLG 실행 클라이언트와 실험 관리자 사이에서만 전달합니다.
+노이즈가 작은/큰 방어의 sigma는 연속 DLG 화면에서 설정할 수 있으며, 큰 값은 작은 값보다
+커야 합니다. 결과는 각 자동 생성 실험 ID의 `dlg_result.json`과
+`results/continuous_runs/<batch_id>/manifest.json`에 저장됩니다.
 
 개별 프로세스 실행:
 
@@ -243,6 +252,7 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 - `POST /api/experiment/config`: 설정 변경
 - `POST /api/experiment/start`: 실험 시작
 - `POST /api/experiment/continuous/start`: 24개 내부자 협력공격 실험을 순차 시작
+- `POST /api/experiment/continuous/dlg/start`: 제출된 체크포인트·이미지로 DLG 실험 3개를 순차 시작
 - `POST /api/experiment/stop`: 실험 중단
 - `GET /api/experiment/status`: 진행 상태 조회
 - `POST /api/experiment/reset`: 상태 초기화

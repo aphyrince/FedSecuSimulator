@@ -158,11 +158,37 @@ def start_dlg():
     payload = request.get_json(silent=True) or {}
     if payload.get("global_model", {}).get("architecture") == MODEL_FORMAT:
         from fedsec.data import CifarRangeDataset
+        from fedsec.model import PREPROCESSING
         from security.dlg_api import make_gradient_payload, original_pixels
 
         state = current_app.extensions["client_state"]
         try:
-            sample, label = CifarRangeDataset(state.dataset_range, limit=1)[0]
+            if "dlg_image" in payload:
+                import math
+                import torch
+
+                pixels = payload["dlg_image"]
+                label = payload.get("dlg_label")
+                if (
+                    not isinstance(pixels, list)
+                    or len(pixels) != 3 * 32 * 32
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                        or not 0 <= value <= 1
+                        for value in pixels
+                    )
+                ):
+                    raise ValueError("DLG image must contain 3072 pixels in [0,1]")
+                if type(label) is not int or not 0 <= label <= 9:
+                    raise ValueError("DLG label must be an integer from 0 to 9")
+                image = torch.tensor(pixels, dtype=torch.float32).reshape(3, 32, 32)
+                mean = torch.tensor(PREPROCESSING["mean"]).reshape(3, 1, 1)
+                std = torch.tensor(PREPROCESSING["std"]).reshape(3, 1, 1)
+                sample = (image - mean) / std
+            else:
+                sample, label = CifarRangeDataset(state.dataset_range, limit=1)[0]
             sigma = float(payload.get("noise_sigma", 0.0)) if payload.get("defense_enabled") else 0.0
             gradient = make_gradient_payload(
                 payload["global_model"], sample, label,

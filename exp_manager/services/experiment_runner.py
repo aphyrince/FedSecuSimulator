@@ -1,6 +1,8 @@
 import os
 import random
 import json
+import hashlib
+import math
 import threading
 import time
 import uuid
@@ -99,6 +101,7 @@ class ExperimentManager:
         self.advanced_rounds = set()
         self.malicious_clients_by_round = {}
         self.dlg_images_by_round = {}
+        self.dlg_labels_by_round = {}
         self.dlg_results_by_round = {}
         self.dlg_participant_by_round = {}
         self.config = {
@@ -155,7 +158,11 @@ class ExperimentManager:
     def get_public_config(self) -> dict:
         config = self.get_config()
         pretrained_model = config.pop("pretrained_global_model", None)
+        dlg_image = config.pop("dlg_image", [])
         config["pretrained_global_model_loaded"] = pretrained_model is not None
+        config["dlg_image_loaded"] = (
+            isinstance(dlg_image, list) and len(dlg_image) == 3 * 32 * 32
+        )
         if pretrained_model:
             config["pretrained_global_model_version"] = pretrained_model.get(
                 "model_version", 0
@@ -417,6 +424,181 @@ class ExperimentManager:
             self.worker.start()
             return self.status()
 
+    def start_continuous_dlg_experiments(self, payload: dict) -> dict:
+        """Run the three DLG cases against one uploaded checkpoint and image."""
+        with self.lock:
+            if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
+                raise RuntimeError("다른 실험이 실행 중입니다.")
+            if not isinstance(payload, dict):
+                raise ValueError("연속 DLG 설정은 객체 형식이어야 합니다.")
+
+            checkpoint_data = payload.get("checkpoint_data")
+            checkpoint = parse_pretrained_global_model(
+                checkpoint_data, "json", self.config["model_config"]
+            )
+            image = payload.get("image")
+            if (
+                not isinstance(image, list)
+                or len(image) != 3 * 32 * 32
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or not 0 <= value <= 1
+                    for value in image
+                )
+            ):
+                raise ValueError("원본 이미지는 RGB 32×32 픽셀 3072개여야 합니다.")
+            label = payload.get("label")
+            if type(label) is not int or not 0 <= label <= 9:
+                raise ValueError("레이블은 0~9 정수여야 합니다.")
+            iterations = positive_int(payload.get("dlg_iterations", 2), "dlg_iterations")
+            if iterations > 1000:
+                raise ValueError("DLG 복원 반복 횟수는 1~1000이어야 합니다.")
+            noise_small = finite_number(
+                payload.get("noise_small", 0.01), "noise_small"
+            )
+            noise_large = finite_number(
+                payload.get("noise_large", 0.1), "noise_large"
+            )
+            if noise_small < 0 or noise_large <= noise_small:
+                raise ValueError("큰 노이즈 값은 작은 노이즈 값보다 커야 합니다.")
+
+            server_process = self.process_manager.server_process
+            if not server_process or server_process.poll() is not None:
+                raise RuntimeError("중앙 서버가 실행 중이어야 합니다.")
+            registry = self.process_manager.client_registry()
+            if not registry:
+                raise RuntimeError("실행 중인 클라이언트가 없습니다.")
+            registered_ids = {client["client_id"] for client in registry}
+            requested_client_id = payload.get("dlg_client_id")
+            if requested_client_id is None:
+                dlg_client_id = random.Random(self.config["seed"]).choice(
+                    sorted(registered_ids)
+                )
+            else:
+                dlg_client_id = positive_int(requested_client_id, "dlg_client_id", 0)
+                if dlg_client_id not in registered_ids:
+                    raise ValueError("선택한 DLG 클라이언트가 실행 중이 아닙니다.")
+
+            batch_id = (
+                f"batch-dlg-{datetime.now().strftime('%Y%m%d-%H%M%S')}-"
+                f"{uuid.uuid4().hex[:6]}"
+            )
+            base_config = deepcopy(self.config)
+            base_config.update(
+                experiment_type="dlg",
+                use_pretrained_global_model=True,
+                pretrained_model_format="json",
+                pretrained_global_model=checkpoint,
+                dlg_iterations=iterations,
+                dlg_client_id=dlg_client_id,
+                dlg_image=list(image),
+                dlg_label=label,
+            )
+            dlg_cases = [
+                {
+                    "key": "attack",
+                    "label": "공격",
+                    "defense_enabled": False,
+                    "noise_sigma": 0.0,
+                },
+                {
+                    "key": "attack_defense_noise_small",
+                    "label": "공격 + 방어 (노이즈 작음)",
+                    "defense_enabled": True,
+                    "noise_sigma": noise_small,
+                },
+                {
+                    "key": "attack_defense_noise_large",
+                    "label": "공격 + 방어 (노이즈 큼)",
+                    "defense_enabled": True,
+                    "noise_sigma": noise_large,
+                },
+            ]
+            prepared_cases = []
+            for index, scenario in enumerate(dlg_cases, start=1):
+                experiment_id = f"{batch_id}-{scenario['key']}"
+                config = {
+                    **base_config,
+                    "experiment_id": experiment_id,
+                    "num_rounds": 1,
+                    "round_configs": [],
+                    "dlg_defense_enabled": scenario["defense_enabled"],
+                    "dlg_noise_sigma": scenario["noise_sigma"],
+                    "continuous_batch_id": batch_id,
+                    "continuous_case_index": index,
+                    "continuous_case_count": len(dlg_cases),
+                    "continuous_dlg": True,
+                    "continuous_scenario": {
+                        "name": scenario["label"],
+                        "environment_template": "dlg",
+                        "environment_label": "DLG",
+                        "security_scenario": scenario["key"],
+                        "security_label": scenario["label"],
+                    },
+                }
+                self._validate_config_for_continuous_case(config, index)
+                if (self.results_dir / experiment_id).exists():
+                    raise RuntimeError(
+                        f"실험 ID 결과 폴더가 이미 존재합니다: {experiment_id}"
+                    )
+                prepared_cases.append(config)
+
+            self.process_manager.sync_client_registry()
+            batch_dir = self.results_dir / "continuous_runs" / batch_id
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            manifest_path = batch_dir / "manifest.json"
+            manifest = {
+                "batch_id": batch_id,
+                "experiment_type": "dlg",
+                "status": "running",
+                "total_cases": len(prepared_cases),
+                "current_case": 0,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": None,
+                "checkpoint_hash": checkpoint["initial_model_hash"],
+                "original_label": label,
+                "cases": [
+                    self._continuous_case_manifest(index, config, "pending")
+                    for index, config in enumerate(prepared_cases, start=1)
+                ],
+            }
+            self._write_continuous_manifest(manifest_path, manifest)
+            for index, config in enumerate(prepared_cases, start=1):
+                self._write_continuous_experiment_info(
+                    index, config, len(prepared_cases)
+                )
+
+            self.stop_event.clear()
+            self.state.update(
+                status="running",
+                current_round=0,
+                round_results=[],
+                log_path=None,
+                result_path=None,
+                chart_path=None,
+                global_model_export_path=None,
+                continuous_experiment={
+                    "batch_id": batch_id,
+                    "experiment_type": "dlg",
+                    "status": "running",
+                    "current_case": 0,
+                    "total_cases": len(prepared_cases),
+                    "current_case_name": "",
+                    "manifest_path": str(manifest_path),
+                    "cases": deepcopy(manifest["cases"]),
+                },
+                message="연속 DLG 실험 3개를 시작했습니다.",
+            )
+            self.worker = threading.Thread(
+                target=self._run_continuous_experiments,
+                args=(prepared_cases, manifest, manifest_path, self.config.copy()),
+                daemon=True,
+            )
+            self.worker.start()
+            return self.status()
+
     def _prepare_continuous_cases(
         self, cases: list[dict], batch_id: str, base_config: dict
     ) -> list[dict]:
@@ -628,9 +810,10 @@ class ExperimentManager:
     @staticmethod
     def _continuous_case_manifest(index: int, config: dict, status: str) -> dict:
         scenario = config["continuous_scenario"]
-        return {
+        manifest_case = {
             "case_index": index,
             "experiment_id": config["experiment_id"],
+            "experiment_type": config["experiment_type"],
             "name": scenario["name"],
             "environment_template": scenario["environment_template"],
             "environment_label": scenario["environment_label"],
@@ -638,7 +821,22 @@ class ExperimentManager:
             "security_label": scenario["security_label"],
             "status": status,
             "result_directory": config["experiment_id"],
-            "configuration": {
+        }
+        if config["experiment_type"] == "dlg":
+            manifest_case["configuration"] = {
+                "dlg_iterations": config["dlg_iterations"],
+                "dlg_client_id": config["dlg_client_id"],
+                "dlg_defense_enabled": config["dlg_defense_enabled"],
+                "dlg_noise_sigma": config["dlg_noise_sigma"],
+                "use_pretrained_global_model": True,
+                "checkpoint_hash": config["pretrained_global_model"]["initial_model_hash"],
+                "original_label": config["dlg_label"],
+                "original_image_sha256": hashlib.sha256(
+                    bytes(round(pixel * 255) for pixel in config["dlg_image"])
+                ).hexdigest(),
+            }
+        else:
+            manifest_case["configuration"] = {
                 key: config[key]
                 for key in (
                     "num_rounds",
@@ -660,22 +858,34 @@ class ExperimentManager:
                     "defense",
                     "round_configs",
                 )
-            },
-        }
+            }
+        return manifest_case
 
     def _write_continuous_experiment_info(
         self, index: int, config: dict, total_cases: int
     ):
         experiment_dir = self.results_dir / config["experiment_id"]
         experiment_dir.mkdir(parents=True, exist_ok=False)
+        stored_config = {
+            key: value
+            for key, value in config.items()
+            if key not in {"pretrained_global_model", "dlg_image"}
+        }
+        if config.get("experiment_type") == "dlg":
+            stored_config["pretrained_global_model_hash"] = config[
+                "pretrained_global_model"
+            ]["initial_model_hash"]
+            stored_config["dlg_image_sha256"] = hashlib.sha256(
+                bytes(round(pixel * 255) for pixel in config["dlg_image"])
+            ).hexdigest()
         info = {
             "experiment_id": config["experiment_id"],
-            "experiment_type": "federated",
+            "experiment_type": config["experiment_type"],
             "batch_id": config["continuous_batch_id"],
             "case_index": index,
             "case_count": total_cases,
             "scenario": config["continuous_scenario"],
-            "configuration": config,
+            "configuration": stored_config,
         }
         (experiment_dir / "experiment_info.json").write_text(
             json.dumps(info, ensure_ascii=False, indent=2, allow_nan=False),
@@ -708,6 +918,9 @@ class ExperimentManager:
                     self.advanced_rounds.clear()
                     self.malicious_clients_by_round.clear()
                     self.dlg_participant_by_round.clear()
+                    self.dlg_images_by_round.clear()
+                    self.dlg_labels_by_round.clear()
+                    self.dlg_results_by_round.clear()
                     self.state.update(
                         status="running",
                         current_round=0,
@@ -751,7 +964,13 @@ class ExperimentManager:
                 )
                 case_manifest["message"] = case_message
                 case_manifest["result_path"] = str(
-                    self.results_dir / config["experiment_id"] / "results.json"
+                    self.results_dir
+                    / config["experiment_id"]
+                    / (
+                        "dlg_result.json"
+                        if config["experiment_type"] == "dlg"
+                        else "results.json"
+                    )
                 )
                 with self.lock:
                     self.state["continuous_experiment"]["cases"][index - 1] = deepcopy(
@@ -830,6 +1049,9 @@ class ExperimentManager:
             self.processed_rounds.clear()
             self.advanced_rounds.clear()
             self.dlg_participant_by_round.clear()
+            self.dlg_images_by_round.clear()
+            self.dlg_labels_by_round.clear()
+            self.dlg_results_by_round.clear()
         return self.status()
 
     def _run(self):
@@ -901,31 +1123,59 @@ class ExperimentManager:
         self.dlg_participant_by_round[round_id] = client["client_id"]
         self.dlg_images_by_round[round_id] = []
         round_config["dlg_image_shape"] = [3, 32, 32]
-        server_round_config = round_config
+        server_round_config = {
+            key: value
+            for key, value in round_config.items()
+            if key not in {"dlg_image", "dlg_label"}
+        }
         if self.config.get("use_pretrained_global_model"):
             server_round_config = {
                 **round_config,
                 "initial_global_model": self.config["pretrained_global_model"],
             }
+            server_round_config.pop("dlg_image", None)
+            server_round_config.pop("dlg_label", None)
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
             server_round_config,
         )
+        participant_payload = {
+            **round_config,
+            "client": client,
+            "image_shape": [3, 32, 32],
+            "noise_sigma": round_config.get("dlg_noise_sigma", 0.0),
+            "defense_enabled": round_config.get("dlg_defense_enabled", False),
+            "server_url": self.process_manager.server_url(),
+        }
+        if round_config.get("continuous_dlg"):
+            checkpoint = {
+                **self.config["pretrained_global_model"],
+                "experiment_id": round_config["experiment_id"],
+                "round": 0,
+            }
+            participant_payload.update(
+                global_model=checkpoint,
+                model_version=checkpoint.get("model_version", 0),
+            )
+            return self.rest_client.post_json(
+                f"{client['url'].rstrip('/')}/api/dlg/start",
+                participant_payload,
+                timeout=float(round_config.get("round_timeout", 900)) + 120.0,
+            )
         return self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/dlg/participant",
-            {
-                **round_config,
-                "client": client,
-                "image_shape": [3, 32, 32],
-                "noise_sigma": round_config.get("dlg_noise_sigma", 0.0),
-                "defense_enabled": round_config.get("dlg_defense_enabled", False),
-                "server_url": self.process_manager.server_url(),
-            },
+            participant_payload,
             timeout=float(round_config.get("round_timeout", 900)) + 120.0,
         )
 
-    def store_dlg_original(self, round_id: int, experiment_id: str,
-                           client_id: int, image: list[float]) -> None:
+    def store_dlg_original(
+        self,
+        round_id: int,
+        experiment_id: str,
+        client_id: int,
+        image: list[float],
+        label: int | None = None,
+    ) -> None:
         """신뢰된 매니저에 원본 등록. 공격 서버에는 원본을 노출하지 않는다."""
         import math
         if experiment_id != self.config["experiment_id"]:
@@ -936,8 +1186,19 @@ class ExperimentManager:
             raise ValueError("Expected 3072 CIFAR-10 pixels")
         if any(not isinstance(x, (int, float)) or not math.isfinite(x) or not 0 <= x <= 1 for x in image):
             raise ValueError("DLG original pixels must be finite in [0,1]")
+        if label is not None and (type(label) is not int or not 0 <= label <= 9):
+            raise ValueError("DLG original label must be an integer from 0 to 9")
+        if self.config.get("continuous_dlg"):
+            expected_image = self.config["dlg_image"]
+            if any(abs(actual - expected) > 1e-6 for actual, expected in zip(image, expected_image)):
+                raise ValueError("DLG original image does not match the submitted image")
+            if label != self.config["dlg_label"]:
+                raise ValueError("DLG original label does not match the submitted label")
+            image = expected_image
         with self.lock:
             self.dlg_images_by_round[round_id] = list(image)
+            if label is not None:
+                self.dlg_labels_by_round[round_id] = label
 
     def get_dlg_original(self, round_id: int) -> list[float]:
         return self.dlg_images_by_round.get(round_id, [])
@@ -952,12 +1213,20 @@ class ExperimentManager:
             "round": round_id,
             "round_type": "dlg",
             "experiment_type": "dlg",
+            "attack_enabled": True,
+            "attack_type": "dlg",
         }
+        original_label = self.dlg_labels_by_round.get(round_id)
+        if original_label is not None:
+            result["original_label"] = original_label
+        original_image = self.get_dlg_original(round_id)
+        if original_image:
+            result["original_image"] = original_image
         output_dir = self.results_dir / config["experiment_id"]
         output_dir.mkdir(parents=True, exist_ok=True)
         from exp_manager.services.dlg_report import save_dlg_images
         result["images"] = save_dlg_images(
-            self.get_dlg_original(round_id), result["reconstructed_image"], output_dir
+            original_image, result["reconstructed_image"], output_dir
         )
         result_path = output_dir / "dlg_result.json"
         result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1185,6 +1454,7 @@ class ExperimentManager:
             "dlg_label": custom.get("dlg_label", config["dlg_label"]),
             "dlg_image_path": custom.get("dlg_image_path", config["dlg_image_path"]),
             "dlg_label_path": custom.get("dlg_label_path", config["dlg_label_path"]),
+            "continuous_dlg": config.get("continuous_dlg", False),
             "defense": custom.get("defense", config["defense"]),
             "defense_enabled": custom.get("defense_enabled", config["defense_enabled"]),
             "clip_norm": custom.get("clip_norm", config["clip_norm"]),

@@ -79,6 +79,7 @@ def test_pretrained_dlg_config_skips_training_rounds():
         assert manager._round_config(2, manager.get_config())["round_type"] == "federated"
         assert manager.get_public_config()["pretrained_global_model_loaded"] is True
         assert "pretrained_global_model" not in manager.get_public_config()
+        assert "dlg_image" not in manager.get_public_config()
         assert "pretrained_global_model" not in manager.status()["config"]
 
 

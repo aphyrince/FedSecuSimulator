@@ -237,6 +237,18 @@ function applyExperimentTemplate(templateName) {
           !dataDistributed ||
           ['running', 'stopping'].includes(experiment.status) ||
           continuousIsRunning;
+        const continuousDlgIsRunning =
+          experiment.continuous_experiment?.experiment_type === 'dlg' &&
+          ['running', 'stopping'].includes(experiment.continuous_experiment.status);
+        setContinuousExperimentBusy(
+          ['running', 'stopping'].includes(experiment.status) || continuousIsRunning,
+        );
+        document.getElementById('stop-continuous-dlg-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type !== 'dlg' ||
+          experiment.continuous_experiment.status !== 'running';
+        continuousDlgRunning = continuousDlgIsRunning;
+        updateContinuousDlgStartButton();
         document.getElementById('stop-continuous-button').disabled =
           !experiment.continuous_experiment ||
           experiment.continuous_experiment.status !== 'running';
@@ -270,10 +282,19 @@ function applyExperimentTemplate(templateName) {
         const experimentIsRunning =
           ['running', 'stopping'].includes(experiment.status) ||
           ['running', 'stopping'].includes(experiment.continuous_experiment?.status);
+        setContinuousExperimentBusy(experimentIsRunning);
         document.getElementById('start-experiment-button').disabled =
           !dataDistributed || experimentIsRunning;
         document.getElementById('start-continuous-button').disabled =
           continuousStartPending || !dataDistributed || experimentIsRunning;
+        continuousDlgRunning =
+          experiment.continuous_experiment?.experiment_type === 'dlg' &&
+          ['running', 'stopping'].includes(experiment.continuous_experiment.status);
+        document.getElementById('stop-continuous-dlg-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type !== 'dlg' ||
+          experiment.continuous_experiment.status !== 'running';
+        updateContinuousDlgStartButton();
         document.getElementById('stop-continuous-button').disabled =
           !experiment.continuous_experiment ||
           experiment.continuous_experiment.status !== 'running';
@@ -396,19 +417,18 @@ function applyExperimentTemplate(templateName) {
       }
 
       function selectRunMode(mode) {
-        const continuous = mode === 'continuous';
-        document.getElementById('individual-mode-panel').hidden = continuous;
-        document.getElementById('continuous-mode-panel').hidden = !continuous;
-        document.getElementById('individual-mode-tab').classList.toggle('active', !continuous);
-        document.getElementById('individual-mode-tab').setAttribute(
-          'aria-selected',
-          String(!continuous),
-        );
-        document.getElementById('continuous-mode-tab').classList.toggle('active', continuous);
-        document.getElementById('continuous-mode-tab').setAttribute(
-          'aria-selected',
-          String(continuous),
-        );
+        const modes = [
+          ['individual', 'individual-mode-tab', 'individual-mode-panel'],
+          ['continuous', 'continuous-mode-tab', 'continuous-mode-panel'],
+          ['continuous-dlg', 'continuous-dlg-mode-tab', 'continuous-dlg-mode-panel'],
+        ];
+        modes.forEach(([modeId, tabId, panelId]) => {
+          const selected = modeId === mode;
+          const tab = document.getElementById(tabId);
+          tab.classList.toggle('active', selected);
+          tab.setAttribute('aria-selected', String(selected));
+          document.getElementById(panelId).hidden = !selected;
+        });
       }
 
       function updatePretrainedModelInput() {

@@ -40,6 +40,25 @@ const continuousSecurityScenarios = [
 const continuousCaseCount =
   continuousEnvironments.length * continuousSecurityScenarios.length;
 let continuousStartPending = false;
+let continuousDlgCheckpointData = '';
+let continuousDlgImagePixels = null;
+let continuousDlgStartPending = false;
+let continuousDlgRunning = false;
+let continuousExperimentBusy = false;
+
+function updateContinuousDlgStartButton() {
+  const button = document.getElementById('start-continuous-dlg-button');
+  if (button) {
+    button.disabled = continuousDlgStartPending || continuousDlgRunning ||
+      continuousExperimentBusy ||
+      !continuousDlgCheckpointData || !continuousDlgImagePixels;
+  }
+}
+
+function setContinuousExperimentBusy(busy) {
+  continuousExperimentBusy = busy;
+  updateContinuousDlgStartButton();
+}
 
 function escapeAttribute(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
@@ -321,8 +340,56 @@ async function startContinuousExperiments() {
       return;
     }
     renderContinuousExperimentStatus(result.continuous_experiment);
+  } catch (error) {
+    const message = `연속 DLG 시작 요청에 실패했습니다: ${error.message}`;
+    document.getElementById('continuous-dlg-status').textContent = message;
+    alert(message);
   } finally {
     continuousStartPending = false;
+    await refresh();
+  }
+}
+
+async function startContinuousDlgExperiments() {
+  if (continuousDlgStartPending || continuousDlgRunning) {
+    return;
+  }
+  continuousDlgStartPending = true;
+  updateContinuousDlgStartButton();
+  document.getElementById('continuous-dlg-status').textContent =
+    '체크포인트와 입력을 검증하고 있습니다...';
+  try {
+    const clientValue = document.getElementById('continuous-dlg-client').value;
+    const response = await fetch('/api/experiment/continuous/dlg/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        checkpoint_data: continuousDlgCheckpointData,
+        image: continuousDlgImagePixels,
+        label: Number(document.getElementById('continuous-dlg-label').value),
+        dlg_iterations: Number(
+          document.getElementById('continuous-dlg-iterations').value,
+        ),
+        dlg_client_id: clientValue === '' ? null : Number(clientValue),
+        noise_small: Number(
+          document.getElementById('continuous-dlg-noise-small').value,
+        ),
+        noise_large: Number(
+          document.getElementById('continuous-dlg-noise-large').value,
+        ),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      alert(result.error || '연속 DLG 실험을 시작하지 못했습니다.');
+      document.getElementById('continuous-dlg-status').textContent =
+        result.error || '연속 DLG 시작에 실패했습니다.';
+      return;
+    }
+    renderContinuousExperimentStatus(result.continuous_experiment);
+  } finally {
+    continuousDlgStartPending = false;
+    updateContinuousDlgStartButton();
     await refresh();
   }
 }
@@ -334,9 +401,25 @@ function renderContinuousExperimentStatus(batch) {
   const active = ['running', 'stopping'].includes(batch.status);
   const current = batch.current_case || 0;
   const name = batch.current_case_name ? ` · ${batch.current_case_name}` : '';
+  if (batch.experiment_type === 'dlg') {
+    continuousDlgRunning = active;
+    document.getElementById('continuous-dlg-status').textContent =
+      `${batch.status} · ${current}/${batch.total_cases}${name} · 배치 ${batch.batch_id}`;
+    document.getElementById('stop-continuous-dlg-button').disabled =
+      batch.status !== 'running';
+    document.getElementById('continuous-dlg-log').textContent = JSON.stringify(
+      batch.cases || [],
+      null,
+      2,
+    );
+    updateContinuousDlgStartButton();
+    return;
+  }
+  continuousDlgRunning = false;
   document.getElementById('continuous-experiment-status').textContent =
     `${batch.status} · ${current}/${batch.total_cases}${name} · 배치 ${batch.batch_id}`;
   document.getElementById('reset-continuous-button').disabled = active;
+  document.getElementById('stop-continuous-button').disabled = !active;
   document.querySelectorAll('#continuous-experiments input, #continuous-experiments select')
     .forEach((input) => {
       input.disabled = active;
@@ -354,7 +437,103 @@ function renderContinuousExperimentStatus(batch) {
     null,
     2,
   );
+  updateContinuousDlgStartButton();
 }
+
+document.getElementById('continuous-dlg-checkpoint').addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  continuousDlgCheckpointData = '';
+  if (!file) {
+    document.getElementById('continuous-dlg-checkpoint-status').textContent =
+      '업로드한 체크포인트를 공격 및 두 노이즈 방어 실험에 그대로 사용합니다.';
+    updateContinuousDlgStartButton();
+    return;
+  }
+  if (file.size > 32 * 1024 * 1024) {
+    alert('체크포인트 파일은 32 MiB 이하여야 합니다.');
+    event.target.value = '';
+    updateContinuousDlgStartButton();
+    return;
+  }
+  try {
+    const checkpointData = await file.text();
+    JSON.parse(checkpointData);
+    continuousDlgCheckpointData = checkpointData;
+    document.getElementById('continuous-dlg-checkpoint-status').textContent =
+      `${file.name} · 체크포인트를 읽었습니다. 세 실험이 이 모델을 공유합니다.`;
+  } catch (error) {
+    document.getElementById('continuous-dlg-checkpoint-status').textContent =
+      '체크포인트 파일을 읽거나 JSON을 해석하지 못했습니다.';
+    alert('유효한 JSON 체크포인트 파일을 선택하세요.');
+  } finally {
+    updateContinuousDlgStartButton();
+  }
+});
+
+document.getElementById('continuous-dlg-original-image').addEventListener(
+  'change',
+  async (event) => {
+    const [file] = event.target.files;
+    continuousDlgImagePixels = null;
+    if (!file) {
+      document.getElementById('continuous-dlg-image-preview').hidden = true;
+      document.getElementById('continuous-dlg-image-status').textContent =
+        '업로드 이미지는 RGB 32×32 크기로 변환되어 모든 실험에 공통 사용됩니다.';
+      updateContinuousDlgStartButton();
+      return;
+    }
+    if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) {
+      alert('이미지 파일(10 MiB 이하)을 선택하세요.');
+      event.target.value = '';
+      updateContinuousDlgStartButton();
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) {
+        throw new Error('이미지 변환용 canvas를 사용할 수 없습니다.');
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, 32, 32);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(bitmap, 0, 0, 32, 32);
+      bitmap.close();
+      const rgba = context.getImageData(0, 0, 32, 32).data;
+      const pixels = [[], [], []];
+      for (let index = 0; index < rgba.length; index += 4) {
+        pixels[0].push(rgba[index] / 255);
+        pixels[1].push(rgba[index + 1] / 255);
+        pixels[2].push(rgba[index + 2] / 255);
+      }
+      continuousDlgImagePixels = pixels.flat();
+      const preview = document.getElementById('continuous-dlg-image-preview');
+      preview.src = canvas.toDataURL('image/png');
+      preview.hidden = false;
+      document.getElementById('continuous-dlg-image-status').textContent =
+        `${file.name} · RGB 32×32 · 레이블 ${document.getElementById('continuous-dlg-label').value}`;
+    } catch (error) {
+      continuousDlgImagePixels = null;
+      document.getElementById('continuous-dlg-image-status').textContent =
+        `이미지를 변환하지 못했습니다: ${error.message}`;
+      alert('이미지를 읽거나 32×32 크기로 변환하지 못했습니다.');
+    } finally {
+      updateContinuousDlgStartButton();
+    }
+  },
+);
+
+document.getElementById('continuous-dlg-label').addEventListener('change', () => {
+  const file = document.getElementById('continuous-dlg-original-image').files[0];
+  if (file && continuousDlgImagePixels) {
+    document.getElementById('continuous-dlg-image-status').textContent =
+      `${file.name} · RGB 32×32 · 레이블 ${document.getElementById('continuous-dlg-label').value}`;
+  }
+});
 
 document.getElementById('continuous-experiments').addEventListener('change', (event) => {
   const row = event.target.closest('.continuous-case-card');
@@ -371,3 +550,4 @@ document.getElementById('continuous-experiments').addEventListener('change', (ev
 });
 
 resetContinuousCases();
+updateContinuousDlgStartButton();

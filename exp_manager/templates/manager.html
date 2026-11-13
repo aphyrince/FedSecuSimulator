@@ -52,6 +52,18 @@
             <span>연속 실험 · 24개</span>
             <small>환경 4종 × 보안 시나리오 6종 순차 실행</small>
           </button>
+          <button
+            id="continuous-dlg-mode-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="continuous-dlg-mode-panel"
+            onclick="selectRunMode('continuous-dlg')"
+          >
+            <span>연속 DLG · 3개</span>
+            <small>공격 · 노이즈 방어 2종</small>
+          </button>
         </nav>
 
         <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
@@ -368,6 +380,117 @@
             </div>
           </div>
           <pre id="continuous-experiment-log" class="continuous-log"></pre>
+        </section>
+
+        <section
+          id="continuous-dlg-mode-panel"
+          class="continuous-panel"
+          role="tabpanel"
+          aria-labelledby="continuous-dlg-mode-tab"
+          hidden
+        >
+          <div class="continuous-heading">
+            <div>
+              <h3>연속 DLG 실험 설정</h3>
+              <p>
+                사전 연합학습 없이 업로드한 체크포인트를 세 실험에서 공통으로 사용합니다.
+                아래 원본 이미지와 레이블도 모든 실험에 동일하게 전달합니다.
+              </p>
+            </div>
+          </div>
+          <div class="continuous-dlg-input-grid">
+            <section class="continuous-dlg-input-card">
+              <h4>학습된 모델 체크포인트</h4>
+              <label>
+                JSON 체크포인트
+                <input
+                  id="continuous-dlg-checkpoint"
+                  type="file"
+                  accept=".json,application/json"
+                />
+              </label>
+              <p id="continuous-dlg-checkpoint-status" class="continuous-dlg-help">
+                업로드한 체크포인트를 공격 및 두 노이즈 방어 실험에 그대로 사용합니다.
+              </p>
+            </section>
+            <section class="continuous-dlg-input-card">
+              <h4>공통 원본 이미지와 레이블</h4>
+              <label>
+                원본 이미지
+                <input
+                  id="continuous-dlg-original-image"
+                  type="file"
+                  accept="image/*"
+                />
+              </label>
+              <label>
+                CIFAR-10 레이블
+                <select id="continuous-dlg-label">
+                  <option value="0">0 · 비행기</option>
+                  <option value="1">1 · 자동차</option>
+                  <option value="2">2 · 새</option>
+                  <option value="3">3 · 고양이</option>
+                  <option value="4">4 · 사슴</option>
+                  <option value="5">5 · 개</option>
+                  <option value="6">6 · 개구리</option>
+                  <option value="7">7 · 말</option>
+                  <option value="8">8 · 배</option>
+                  <option value="9">9 · 트럭</option>
+                </select>
+              </label>
+              <img id="continuous-dlg-image-preview" alt="연속 DLG 원본 이미지 미리보기" hidden />
+              <p id="continuous-dlg-image-status" class="continuous-dlg-help">
+                업로드 이미지는 RGB 32×32 크기로 변환되어 모든 실험에 공통 사용됩니다.
+              </p>
+            </section>
+          </div>
+          <div class="continuous-dlg-options">
+            <label>
+              DLG 복원 반복 횟수
+              <input id="continuous-dlg-iterations" type="number" min="1" max="1000" value="2" />
+            </label>
+            <label>
+              참가 클라이언트
+              <input id="continuous-dlg-client" type="number" min="0" max="9" placeholder="자동 선정" />
+            </label>
+            <label>
+              노이즈 작음 σ
+              <input id="continuous-dlg-noise-small" type="number" min="0" step="any" value="0.01" />
+            </label>
+            <label>
+              노이즈 큼 σ
+              <input id="continuous-dlg-noise-large" type="number" min="0" step="any" value="0.1" />
+            </label>
+          </div>
+          <div class="continuous-dlg-scenarios" aria-label="연속 DLG 실험 3종">
+            <article><span>01</span><strong>공격</strong><small>그래디언트 노이즈 방어 없음</small></article>
+            <article><span>02</span><strong>공격 + 방어</strong><small>노이즈 작음</small></article>
+            <article><span>03</span><strong>공격 + 방어</strong><small>노이즈 큼</small></article>
+          </div>
+          <div class="continuous-actions">
+            <p id="continuous-dlg-status">체크포인트와 원본 이미지를 업로드하세요.</p>
+            <div class="continuous-action-buttons">
+              <button
+                id="start-continuous-dlg-button"
+                type="button"
+                class="start"
+                onclick="startContinuousDlgExperiments()"
+                disabled
+              >
+                연속 DLG 시작 (3개)
+              </button>
+              <button
+                id="stop-continuous-dlg-button"
+                type="button"
+                class="stop"
+                onclick="control('/api/experiment/stop')"
+                disabled
+              >
+                연속 DLG 중단
+              </button>
+            </div>
+          </div>
+          <pre id="continuous-dlg-log" class="continuous-log"></pre>
         </section>
 
         <div class="data-distribution-panel">

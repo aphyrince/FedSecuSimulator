@@ -1,3 +1,5 @@
+let dataDistributed = false;
+
 async function control(path) {
   const response = await fetch(path, { method: 'POST' });
   if (!response.ok) {
@@ -7,53 +9,55 @@ async function control(path) {
   await refresh();
 }
 
-async function saveExperimentConfig() {
+async function saveExperimentConfig(overrides = {}) {
+  const config = {
+    experiment_id: document.getElementById('experiment-id').value,
+    num_rounds: Number(document.getElementById('rounds').value),
+    experiment_type: document.getElementById('experiment-type').value,
+    dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
+    use_pretrained_global_model: document.getElementById('use-pretrained-global-model').checked,
+    pretrained_model_format: document.getElementById('pretrained-model-format').value,
+    pretrained_model_data: document.getElementById('use-pretrained-global-model').checked
+      ? document.getElementById('pretrained-model-data').value
+      : '',
+    dlg_iterations: Number(document.getElementById('dlg-iterations').value),
+    dlg_client_id: document.getElementById('dlg-client').value === ''
+      ? null
+      : Number(document.getElementById('dlg-client').value),
+    participation_rate: Number(document.getElementById('participation').value),
+    seed: Number(document.getElementById('seed').value),
+    local_epochs: Number(document.getElementById('local-epochs').value),
+    batch_size: Number(document.getElementById('batch-size').value),
+    learning_rate: Number(document.getElementById('learning-rate').value),
+    device: document.getElementById('device').value,
+    round_timeout: Number(document.getElementById('round-timeout').value),
+    max_train_samples: document.getElementById('max-train-samples').value === ''
+      ? null
+      : Number(document.getElementById('max-train-samples').value),
+    max_test_samples: document.getElementById('max-test-samples').value === ''
+      ? null
+      : Number(document.getElementById('max-test-samples').value),
+    data_distribution: document.getElementById('distribution').value,
+    dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
+    dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
+    defense: document.getElementById('defense').value,
+    defense_enabled: document.getElementById('defense-enabled').checked,
+    attack_enabled: document.getElementById('attack').checked,
+    attack_scale: document.getElementById('attack-scale').value.trim() === ''
+      ? -5
+      : Number(document.getElementById('attack-scale').value),
+    malicious_clients: document
+      .getElementById('malicious')
+      .value.split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value)),
+    round_configs: readRoundConfigs(),
+  };
+  Object.assign(config, overrides);
   const response = await fetch('/api/experiment/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      experiment_id: document.getElementById('experiment-id').value,
-      num_rounds: Number(document.getElementById('rounds').value),
-      experiment_type: document.getElementById('experiment-type').value,
-      dlg_training_rounds: Number(document.getElementById('dlg-training-rounds').value),
-      use_pretrained_global_model: document.getElementById('use-pretrained-global-model').checked,
-      pretrained_model_format: document.getElementById('pretrained-model-format').value,
-      pretrained_model_data: document.getElementById('use-pretrained-global-model').checked
-        ? document.getElementById('pretrained-model-data').value
-        : '',
-      dlg_iterations: Number(document.getElementById('dlg-iterations').value),
-      dlg_client_id: document.getElementById('dlg-client').value === ''
-        ? null
-        : Number(document.getElementById('dlg-client').value),
-      participation_rate: Number(document.getElementById('participation').value),
-      seed: Number(document.getElementById('seed').value),
-      local_epochs: Number(document.getElementById('local-epochs').value),
-      batch_size: Number(document.getElementById('batch-size').value),
-      learning_rate: Number(document.getElementById('learning-rate').value),
-      device: document.getElementById('device').value,
-      round_timeout: Number(document.getElementById('round-timeout').value),
-      max_train_samples: document.getElementById('max-train-samples').value === ''
-        ? null
-        : Number(document.getElementById('max-train-samples').value),
-      max_test_samples: document.getElementById('max-test-samples').value === ''
-        ? null
-        : Number(document.getElementById('max-test-samples').value),
-      data_distribution: document.getElementById('distribution').value,
-      dlg_noise_sigma: Number(document.getElementById('dlg-noise').value),
-      dlg_defense_enabled: document.getElementById('dlg-defense-enabled').checked,
-      defense: document.getElementById('defense').value,
-      defense_enabled: document.getElementById('defense-enabled').checked,
-      attack_enabled: document.getElementById('attack').checked,
-      attack_scale: document.getElementById('attack-scale').value.trim() === ''
-        ? -5
-        : Number(document.getElementById('attack-scale').value),
-      malicious_clients: document
-        .getElementById('malicious')
-        .value.split(',')
-        .map((value) => Number(value.trim()))
-        .filter((value) => Number.isInteger(value)),
-      round_configs: readRoundConfigs(),
-    }),
+    body: JSON.stringify(config),
   });
   const savedConfig = await response.json();
   if (!response.ok) {
@@ -63,6 +67,7 @@ async function saveExperimentConfig() {
       `전역 모델 체크포인트를 저장했습니다 (버전 ${savedConfig.pretrained_global_model_version ?? 0}).`;
   }
   await refresh();
+  return response.ok;
 }
 
 function stateText(value) {
@@ -221,6 +226,20 @@ function applyExperimentTemplate(templateName) {
         const experiment = await experimentResponse.json();
         document.getElementById('experiment-status').textContent =
           `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.total_rounds} · ${experiment.message}`;
+        renderContinuousExperimentStatus(experiment.continuous_experiment);
+        const continuousIsRunning = ['running', 'stopping'].includes(
+          experiment.continuous_experiment?.status,
+        );
+        document.getElementById('start-experiment-button').disabled =
+          !dataDistributed || ['running', 'stopping'].includes(experiment.status) || continuousIsRunning;
+        document.getElementById('start-continuous-button').disabled =
+          continuousStartPending ||
+          !dataDistributed ||
+          ['running', 'stopping'].includes(experiment.status) ||
+          continuousIsRunning;
+        document.getElementById('stop-continuous-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.status !== 'running';
         const maliciousSelections = experiment.malicious_clients_by_round || {};
         const selectedRounds = Object.entries(maliciousSelections)
           .filter(([, ids]) => ids.length)
@@ -243,9 +262,21 @@ function applyExperimentTemplate(templateName) {
       async function refreshDataStatus() {
         const response = await fetch('/api/data/status');
         const data = await response.json();
-        const dataDistributed = Boolean(data.configured);
+        dataDistributed = Boolean(data.configured);
         document.getElementById('start-experiment-button').disabled = !dataDistributed;
         document.getElementById('stop-experiment-button').disabled = !dataDistributed;
+        const statusResponse = await fetch('/api/experiment/status');
+        const experiment = await statusResponse.json();
+        const experimentIsRunning =
+          ['running', 'stopping'].includes(experiment.status) ||
+          ['running', 'stopping'].includes(experiment.continuous_experiment?.status);
+        document.getElementById('start-experiment-button').disabled =
+          !dataDistributed || experimentIsRunning;
+        document.getElementById('start-continuous-button').disabled =
+          continuousStartPending || !dataDistributed || experimentIsRunning;
+        document.getElementById('stop-continuous-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.status !== 'running';
         document.getElementById('data-status').textContent =
           `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
       }
@@ -303,6 +334,7 @@ function applyExperimentTemplate(templateName) {
         document.getElementById('attack-scale').value = config.attack_scale ?? -5;
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
+        resetContinuousCases();
         updateConditionalSettings();
       }
 
@@ -361,6 +393,22 @@ function applyExperimentTemplate(templateName) {
           !defenseEnabled || dlgEnabled;
         document.getElementById('defense-enabled').disabled =
           dlgEnabled;
+      }
+
+      function selectRunMode(mode) {
+        const continuous = mode === 'continuous';
+        document.getElementById('individual-mode-panel').hidden = continuous;
+        document.getElementById('continuous-mode-panel').hidden = !continuous;
+        document.getElementById('individual-mode-tab').classList.toggle('active', !continuous);
+        document.getElementById('individual-mode-tab').setAttribute(
+          'aria-selected',
+          String(!continuous),
+        );
+        document.getElementById('continuous-mode-tab').classList.toggle('active', continuous);
+        document.getElementById('continuous-mode-tab').setAttribute(
+          'aria-selected',
+          String(continuous),
+        );
       }
 
       function updatePretrainedModelInput() {

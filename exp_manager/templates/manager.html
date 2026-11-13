@@ -27,6 +27,34 @@
             <h2>실험 설정 및 실행</h2>
           </div>
         </div>
+        <nav class="run-mode-tabs" role="tablist" aria-label="실험 실행 방식">
+          <button
+            id="individual-mode-tab"
+            class="experiment-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="individual-mode-panel"
+            onclick="selectRunMode('individual')"
+          >
+            <span>개별 실험</span>
+            <small>설정한 실험 하나 실행</small>
+          </button>
+          <button
+            id="continuous-mode-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="continuous-mode-panel"
+            onclick="selectRunMode('continuous')"
+          >
+            <span>연속 실험 · 16개</span>
+            <small>환경 4종 × 공격·방어 4종 순차 실행</small>
+          </button>
+        </nav>
+
+        <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
         <div class="form-grid">
           <label>실험 ID<input id="experiment-id" /></label>
           <label id="rounds-setting">라운드 수<input id="rounds" type="number" min="1" /></label>
@@ -249,14 +277,6 @@
           </div>
         </section>
 
-        <div class="data-distribution-panel">
-          <div>
-            <h3>CIFAR-10 데이터 분배</h3>
-            <p id="data-status">데이터 분배 상태를 확인 중...</p>
-          </div>
-          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
-        </div>
-
         <div class="experiment-actions">
           <button onclick="saveExperimentConfig()">설정 저장</button>
           <button
@@ -295,6 +315,86 @@
             </thead>
             <tbody id="round-configs"></tbody>
           </table>
+        </div>
+        </section>
+
+        <section
+          id="continuous-mode-panel"
+          class="continuous-panel"
+          role="tabpanel"
+          aria-labelledby="continuous-mode-tab"
+          hidden
+        >
+          <div class="continuous-heading">
+            <div>
+              <h3>내부자 협력공격 연속 실험 설정</h3>
+              <p>
+                공통 모델·학습 설정은 개별 실험 탭에서 설정한 값을 사용합니다. 아래 16개 행은
+                각 실험에서 개별로 실행할 라운드 수, 환경, 공격·방어 설정입니다.
+              </p>
+            </div>
+            <button
+              id="reset-continuous-button"
+              type="button"
+              class="secondary"
+              onclick="resetContinuousCases()"
+            >
+              기본 16개 조합으로 복원
+            </button>
+          </div>
+          <div class="continuous-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>실험 이름</th>
+                  <th>환경</th>
+                  <th>보안 시나리오</th>
+                  <th>라운드</th>
+                  <th>참여율</th>
+                  <th>지연 클라이언트</th>
+                  <th>데이터 분포</th>
+                  <th>공격</th>
+                  <th>공격 배율</th>
+                  <th>방어</th>
+                  <th>방어 방식</th>
+                </tr>
+              </thead>
+              <tbody id="continuous-experiments"></tbody>
+            </table>
+          </div>
+          <div class="continuous-actions">
+            <p id="continuous-experiment-status">연속 실험 16개가 준비되었습니다.</p>
+            <div class="continuous-action-buttons">
+              <button
+                id="start-continuous-button"
+                type="button"
+                class="start"
+                onclick="startContinuousExperiments()"
+                disabled
+              >
+                연속 실험 시작 (16개)
+              </button>
+              <button
+                id="stop-continuous-button"
+                type="button"
+                class="stop"
+                onclick="control('/api/experiment/stop')"
+                disabled
+              >
+                연속 실험 중단
+              </button>
+            </div>
+          </div>
+          <pre id="continuous-experiment-log" class="continuous-log"></pre>
+        </section>
+
+        <div class="data-distribution-panel">
+          <div>
+            <h3>CIFAR-10 데이터 분배</h3>
+            <p id="data-status">데이터 분배 상태를 확인 중...</p>
+          </div>
+          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
         </div>
 
         <p id="experiment-status">확인 중...</p>
@@ -338,6 +438,7 @@
     </main>
 
     <script defer src="{{ url_for('static', filename='js/round-config.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/continuous-experiments.js') }}"></script>
     <script defer src="{{ url_for('static', filename='js/manager.js') }}"></script>
   </body>
 </html>

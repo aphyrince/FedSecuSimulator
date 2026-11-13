@@ -29,6 +29,23 @@ def start():
         return jsonify(error=str(exc)), 409
 
 
+@experiment_bp.post("/api/experiment/continuous/start")
+def start_continuous():
+    """16개 내부자 협력공격 실험을 순차 실행한다."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify(error="연속 실험 설정은 객체 형식이어야 합니다."), 400
+        cases = payload.get("cases")
+        return jsonify(
+            current_app.extensions["experiment_manager"].start_continuous_experiments(
+                cases
+            )
+        )
+    except (RuntimeError, ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
 @experiment_bp.post("/api/experiment/stop")
 def stop():
     return jsonify(current_app.extensions["experiment_manager"].stop())

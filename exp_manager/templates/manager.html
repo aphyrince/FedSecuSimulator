@@ -329,8 +329,9 @@
             <div>
               <h3>내부자 협력공격 연속 실험 설정</h3>
               <p>
-                공통 모델·학습 설정은 개별 실험 탭에서 설정한 값을 사용합니다. 아래 24개 행은
-                각 실험에서 개별로 실행할 라운드 수, 환경, 공격·방어 설정입니다.
+                아래 24개 행마다 연합학습 설정을 개별 지정할 수 있습니다. 추가 설정에서 시드,
+                학습 조건, 시간 제한, 표본 제한, 악성 후보와 라운드별 설정을 편집하세요.
+                DLG 전용 설정은 연속 실험에 적용되지 않습니다.
               </p>
             </div>
             <button
@@ -342,27 +343,7 @@
               기본 24개 조합으로 복원
             </button>
           </div>
-          <div class="continuous-table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>실험 이름</th>
-                  <th>환경</th>
-                  <th>보안 시나리오</th>
-                  <th>라운드</th>
-                  <th>참여율</th>
-                  <th>지연 클라이언트</th>
-                  <th>데이터 분포</th>
-                  <th>공격</th>
-                  <th>공격 배율</th>
-                  <th>방어</th>
-                  <th>방어 방식</th>
-                </tr>
-              </thead>
-              <tbody id="continuous-experiments"></tbody>
-            </table>
-          </div>
+          <div id="continuous-experiments" class="continuous-case-grid"></div>
           <div class="continuous-actions">
             <p id="continuous-experiment-status">연속 실험 24개가 준비되었습니다.</p>
             <div class="continuous-action-buttons">

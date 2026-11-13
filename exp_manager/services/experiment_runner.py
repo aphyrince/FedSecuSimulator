@@ -489,6 +489,52 @@ class ExperimentManager:
             num_rounds = positive_int(
                 item.get("num_rounds", base_config["num_rounds"]), "num_rounds"
             )
+            seed = positive_int(item.get("seed", base_config["seed"]), f"{index}번 seed", 0)
+            round_timeout = finite_number(
+                item.get("round_timeout", base_config["round_timeout"]),
+                f"{index}번 round_timeout",
+                positive=True,
+            )
+            malicious_clients = item.get(
+                "malicious_clients", base_config["malicious_clients"]
+            )
+            if (
+                not isinstance(malicious_clients, list)
+                or len(malicious_clients) > self.client_count
+                or any(
+                    type(client_id) is not int
+                    or not 0 <= client_id < self.client_count
+                    for client_id in malicious_clients
+                )
+                or len(set(malicious_clients)) != len(malicious_clients)
+            ):
+                raise ValueError(f"{index}번 악성 클라이언트 후보 설정이 올바르지 않습니다.")
+            round_configs = item.get("round_configs", [])
+            if not isinstance(round_configs, list) or len(round_configs) > num_rounds:
+                raise ValueError(f"{index}번 라운드별 설정 수가 라운드 수와 맞지 않습니다.")
+            self._validate_continuous_round_configs(round_configs, index)
+            if (
+                len(malicious_clients) < 2
+                and (
+                    attack_enabled
+                    or any(
+                        config.get("attack_enabled", attack_enabled)
+                        for config in round_configs
+                    )
+                )
+            ):
+                raise ValueError(f"{index}번 공격에는 악성 클라이언트 후보가 2개 이상 필요합니다.")
+            training_config = {
+                key: item.get(key, base_config[key])
+                for key in (
+                    "local_epochs",
+                    "batch_size",
+                    "learning_rate",
+                    "device",
+                    "max_train_samples",
+                    "max_test_samples",
+                )
+            }
 
             experiment_id = (
                 f"{batch_id}-{environment_key}-{security_key}"
@@ -504,7 +550,11 @@ class ExperimentManager:
                 "experiment_id": experiment_id,
                 "experiment_type": "federated",
                 "num_rounds": num_rounds,
-                "round_configs": [],
+                "seed": seed,
+                "round_timeout": round_timeout,
+                **training_config,
+                "malicious_clients": malicious_clients,
+                "round_configs": round_configs,
                 "participation_rate": participation_rate,
                 "delay_clients": delay_clients,
                 "data_distribution": distribution,
@@ -529,6 +579,47 @@ class ExperimentManager:
             raise ValueError("연속 실험에서 환경·보안 조합이 누락되었습니다.")
         return prepared
 
+    def _validate_continuous_round_configs(self, round_configs: list, case_index: int):
+        for round_index, config in enumerate(round_configs, start=1):
+            if not isinstance(config, dict):
+                raise ValueError(
+                    f"{case_index}번 실험의 {round_index}라운드 설정 형식이 올바르지 않습니다."
+                )
+            if "participation_rate" in config:
+                participation = finite_number(
+                    config["participation_rate"],
+                    f"{case_index}번 {round_index}라운드 참여율",
+                    positive=True,
+                )
+                if participation > 1:
+                    raise ValueError("라운드 참여율은 0 초과 1 이하여야 합니다.")
+            for key in ("attack_enabled", "defense_enabled"):
+                if key in config and not isinstance(config[key], bool):
+                    raise ValueError(
+                        f"{case_index}번 {round_index}라운드 {key} 설정이 올바르지 않습니다."
+                    )
+            if "delay_clients" in config:
+                delay_clients = config["delay_clients"]
+                if (
+                    not isinstance(delay_clients, list)
+                    or any(
+                        type(client_id) is not int
+                        or not 0 <= client_id < self.client_count
+                        for client_id in delay_clients
+                    )
+                    or len(set(delay_clients)) != len(delay_clients)
+                ):
+                    raise ValueError(
+                        f"{case_index}번 {round_index}라운드 지연 클라이언트 설정이 올바르지 않습니다."
+                    )
+            if "defense" in config and config["defense"] not in {
+                "norm_clipping",
+                "coordinate_median",
+            }:
+                raise ValueError(
+                    f"{case_index}번 {round_index}라운드 방어 방식이 올바르지 않습니다."
+                )
+
     def _validate_config_for_continuous_case(self, config: dict, index: int):
         TrainingSettings.from_dict(config)
         finite_number(config["round_timeout"], f"{index}번 round_timeout", positive=True)
@@ -551,13 +642,23 @@ class ExperimentManager:
                 key: config[key]
                 for key in (
                     "num_rounds",
+                    "seed",
+                    "local_epochs",
+                    "batch_size",
+                    "learning_rate",
+                    "device",
+                    "round_timeout",
+                    "max_train_samples",
+                    "max_test_samples",
                     "participation_rate",
                     "delay_clients",
                     "data_distribution",
                     "attack_enabled",
                     "attack_scale",
+                    "malicious_clients",
                     "defense_enabled",
                     "defense",
+                    "round_configs",
                 )
             },
         }

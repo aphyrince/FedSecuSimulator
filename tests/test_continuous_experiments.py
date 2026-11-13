@@ -47,8 +47,29 @@ def test_continuous_start_creates_24_unique_experiments_and_metadata():
         results_dir = Path(temporary_directory)
         manager = ExperimentManager(ProcessManager(), results_dir, client_count=10)
         manager.config.update(experiment_type="federated", num_rounds=3)
+        cases = scenario_cases()
+        cases[0].update(
+            seed=77,
+            local_epochs=4,
+            batch_size=16,
+            learning_rate=0.005,
+            device="cpu",
+            round_timeout=120,
+            max_train_samples=30,
+            max_test_samples=20,
+            malicious_clients=[3, 4, 5],
+            round_configs=[
+                {
+                    "participation_rate": 0.75,
+                    "attack_enabled": True,
+                    "delay_clients": [1],
+                    "defense_enabled": True,
+                    "defense": "coordinate_median",
+                }
+            ],
+        )
         with patch("exp_manager.services.experiment_runner.threading.Thread") as thread:
-            status = manager.start_continuous_experiments(scenario_cases())
+            status = manager.start_continuous_experiments(cases)
 
         batch = status["continuous_experiment"]
         assert batch["total_cases"] == CONTINUOUS_CASE_COUNT == 24
@@ -62,6 +83,16 @@ def test_continuous_start_creates_24_unique_experiments_and_metadata():
         assert by_scenario[("baseline", "normal")]["configuration"][
             "participation_rate"
         ] == 1
+        normal_config = by_scenario[("baseline", "normal")]["configuration"]
+        assert normal_config["seed"] == 77
+        assert normal_config["local_epochs"] == 4
+        assert normal_config["batch_size"] == 16
+        assert normal_config["learning_rate"] == 0.005
+        assert normal_config["round_timeout"] == 120
+        assert normal_config["max_train_samples"] == 30
+        assert normal_config["max_test_samples"] == 20
+        assert normal_config["malicious_clients"] == [3, 4, 5]
+        assert normal_config["round_configs"][0]["defense"] == "coordinate_median"
         assert by_scenario[("delay", "normal")]["configuration"][
             "delay_clients"
         ] == [2, 5, 8]
@@ -103,6 +134,19 @@ def test_continuous_start_creates_24_unique_experiments_and_metadata():
             assert info["scenario"]["environment_label"] == case["environment_label"]
             assert info["scenario"]["security_label"] == case["security_label"]
             assert info["configuration"]["num_rounds"] == 3
+            assert "local_epochs" in info["configuration"]
+            assert "round_configs" in info["configuration"]
+        normal_manifest_case = next(
+            case
+            for case in manifest["cases"]
+            if case["security_scenario"] == "normal"
+            and case["environment_template"] == "baseline"
+        )
+        assert normal_manifest_case["configuration"]["seed"] == 77
+        assert normal_manifest_case["configuration"]["local_epochs"] == 4
+        assert normal_manifest_case["configuration"]["round_configs"][0][
+            "attack_enabled"
+        ] is True
         thread.assert_called_once()
 
 
@@ -180,6 +224,12 @@ def test_continuous_start_rejects_missing_matrix_cases():
             manager._prepare_continuous_cases(
                 invalid, "batch-test", manager.get_config()
             )
+        invalid = scenario_cases()
+        invalid[0]["malicious_clients"] = [1, 1]
+        with pytest.raises(ValueError, match="악성 클라이언트 후보"):
+            manager._prepare_continuous_cases(
+                invalid, "batch-test", manager.get_config()
+            )
 
 
 def test_active_continuous_batch_blocks_other_experiment_operations():
@@ -213,6 +263,7 @@ def test_manager_page_exposes_continuous_experiment_controls():
     assert 'id="continuous-mode-panel"' in page
     assert 'id="continuous-experiments"' in page
     assert 'id="start-continuous-button"' in page
+    assert "연합학습 설정을 개별 지정" in page
     assert "continuous-experiments.js" in page
     assert any(
         rule.rule == "/api/experiment/continuous/start"

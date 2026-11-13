@@ -1,7 +1,7 @@
 """변조 전 delta를 평균하고 공격 배율을 곱한 뒤 제출 모델을 다시 구성한다."""
 
 from fedsec.attack import collude_updates as collude_core
-from common.model import finite_number, positive_int
+from common.model import finite_number, positive_int, weights_norm
 from common.updates import update_delta, validate_updates, with_delta
 
 
@@ -13,10 +13,25 @@ def collude_updates(global_model: dict, own_update: dict, peer_updates: list[dic
     validate_updates(global_model, updates)
     if len(updates) < min_colluders:
         result = with_delta(global_model, own_update, update_delta(global_model, own_update))
-        result["update"].update(attack_applied=False, attack_reason="insufficient_colluders")
+        original_norm = weights_norm(update_delta(global_model, own_update))
+        result["update"].update(
+            attack_applied=False,
+            attack_reason="insufficient_colluders",
+            norm_before_attack=original_norm,
+            norm_after_attack=original_norm,
+        )
         return result
     deltas = [update_delta(global_model, item) for item in updates]
-    result = with_delta(global_model, own_update, collude_core(deltas, scale))
+    averaged_delta = collude_core(deltas, 1.0)
+    manipulated_delta = collude_core(deltas, scale)
+    result = with_delta(global_model, own_update, manipulated_delta)
     result["malicious"] = True
-    result["update"].update(scale=scale, attack_applied=True, collusion_peer_count=len(peer_updates))
+    result["update"].update(
+        scale=scale,
+        attack_applied=True,
+        collusion_peer_count=len(peer_updates),
+        norm_before_attack=weights_norm(averaged_delta),
+        norm_after_attack=weights_norm(manipulated_delta),
+        own_update_norm=weights_norm(update_delta(global_model, own_update)),
+    )
     return result

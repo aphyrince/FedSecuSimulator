@@ -78,6 +78,20 @@ def reset():
         return jsonify(error=str(exc)), 409
 
 
+@experiment_bp.post("/api/experiment/replay")
+def replay():
+    """저장된 연합학습 라운드를 설정·데이터·체크포인트 스냅샷으로 재실행한다."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            current_app.extensions["experiment_manager"].replay_round(
+                payload["experiment_id"], payload["round"]
+            )
+        )
+    except (KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
 @experiment_bp.post("/api/rounds/<int:round_id>/execute")
 def execute_round(round_id):
     """단일 라운드 설정을 실행하고 중앙 서버 결과를 관리자 API로 반환한다."""

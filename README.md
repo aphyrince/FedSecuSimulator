@@ -150,7 +150,7 @@ print(result["final"])
 ```
 
 두 실험의 원본 결과는 각각 `results/<실험 ID>/`에,
-비교표는 `results/compare_001_comparison.json`에 저장됩니다.
+기존 두 조건 비교표는 `results/compare_001_comparison.json`에 저장됩니다.
 기존 결과를 덮어쓰지 않으므로 다시 실행할 때는 새 ID를 사용하세요.
 실패·중단 시 다음 실험으로 넘어가지 않으며, 조건이 다른 결과는 비교 파일로 저장하지 않습니다.
 Ctrl+C 또는 대기 시간 초과 시 현재 실험에 중단을 요청합니다. 진행 중인 라운드는 바로 끝나지 않을 수 있습니다.
@@ -179,10 +179,39 @@ Ctrl+C 또는 대기 시간 초과 시 현재 실험에 중단을 요청합니�
 기준이 다르거나 예전 가상 평가 결과이면 비교를 거부합니다. 정확도는 0~1, 하락 폭은 비율과 %p로 제공합니다.
 참여자 중 악성이 1개뿐이면 협력 공격을 생략하고 정상 delta를 제출합니다. `attack_applied`도 확인하세요.
 
+요구사항의 공격 피해·방어 개선·정상 손실을 여러 시드에 대해 비교하려면 전체 6조건 실행을 사용합니다.
+정상 FedAvg, 공격 FedAvg, 두 방어 방식 각각의 정상+방어 및 공격+방어를 실행하며,
+시드별 최종 테스트 정확도 차이와 시드 평균을 `%p`로 저장합니다. 음수 차이도 그대로 보고합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m exp_manager.services.comparison_runner security_001 --security-seeds 42,43,44
+```
+
+보고서는 `results/security_001_security_comparison.json`에 기록됩니다. 각 시드의 여섯 결과와
+정상 대비 공격 피해, 공격 대비 방어 개선, 정상 대비 정상+방어 손실을 노름 클리핑과
+좌표별 중앙값 각각에 대해 확인할 수 있습니다.
+
 ### 결과와 검증
 
 매 라운드 전역 모델과 실제 제출 delta는 `results/<ID>/checkpoints/`와 `updates/`에 `.pt`로 저장합니다.
 클라이언트의 변조 전 모델/delta도 `results/<ID>/clients/`에 저장합니다.
+`rounds/round_NNN.json` 및 `rounds.csv`에는 클라이언트별 정확도·표본 수·학습/제출 시각,
+공격·방어 전후 업데이트 노름, 채택/제외 사유, 악성 비율과 라운드 평가가 기록됩니다.
+채택 업데이트가 3개 미만이면 사유와 평가를 기록하고 전역 모델은 갱신하지 않습니다.
+전체 악성 비율은 `malicious_ratio`, 채택 악성 비율은 `accepted_malicious_ratio`이며,
+채택자가 없을 때 후자는 `N/A`입니다. 분할은 `results/data_splits/<split_id>.json`에 시드,
+클라이언트별 범위 및 데이터 파일 해시와 함께 저장됩니다.
+
+저장된 연합학습 라운드는 동일한 데이터 분할과 라운드 시작 체크포인트로 새 실험 ID에 재실행할 수 있습니다.
+DLG 실험은 `dlg_inputs.json` 및 `inputs/model.pt`의 원본 이미지·정답·노이즈 설정·체크포인트로 재실행됩니다.
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/experiment/replay `
+  -ContentType 'application/json' -Body '{"experiment_id":"fedsec-run","round":3}'
+```
+
+DLG 실험은 `round`를 해당 복원 결과의 라운드 번호로 지정합니다. 원본 이미지와 정답은 DLG 서버에
+공격 입력으로 보내지 않고, 신뢰된 실험 관리자에서 복원 후 MSE 평가와 재실행을 위해 보관합니다.
 JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인트 경로를 기록합니다.
 `GET /api/model/global`은 현재 전체 모델을, 클라이언트 extracted-update API는 저장한 delta를 반환합니다.
 학습·집계·평가 실패 시 가짜 정확도를 만들지 않고 오류를 반환합니다.
@@ -194,9 +223,8 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 검증은 작은 고정 텐서·로컬 합성 데이터 파일·가짜 학습/평가 함수로 수행하며 실제 CNN 학습과 서버 프로세스를 실행하지 않습니다.
 실제 데이터에서의 수렴, 공격 효과, GPU 성능은 사용자의 실행으로 확인해야 합니다.
 
-**DLG는 2번 담당자의 연결 작업이 남아 있습니다.** 기존 가상 DLG는 실제 CNN과 호환되지 않아
-현재 실제 모델의 DLG 요청은 명시적 오류로 차단합니다. `common.model.build_model()`과
-`load_model_checkpoint()`를 이용해 같은 모델·가중치·전처리를 사용하는 DLG로 연결하세요.
+DLG는 `small_cnn_v1`의 실제 그래디언트로 복원합니다. 서버의 복원 입력은 전역 모델과
+클라이언트 그래디언트뿐이며, 원본 이미지·정답은 실험 관리자에서만 평가와 재실행용으로 보관합니다.
 
 ## 실행
 
@@ -256,6 +284,7 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 - `POST /api/experiment/stop`: 실험 중단
 - `GET /api/experiment/status`: 진행 상태 조회
 - `POST /api/experiment/reset`: 상태 초기화
+- `POST /api/experiment/replay`: 저장된 연합학습 라운드 또는 DLG 실험 재실행
 - `POST /api/results/round`: 중앙 서버의 정상 라운드 결과 수신
 - `POST /api/dlg/results`: 중앙 서버의 DLG 복원 결과 수신
 

@@ -11,12 +11,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 from common.training import TrainingSettings
-from common.model import build_model, model_config, finite_number, positive_int
+from common.model import (
+    build_model,
+    load_model_checkpoint,
+    model_config,
+    finite_number,
+    positive_int,
+    save_model_checkpoint,
+    weights_hash,
+)
 
 from exp_manager.services.experiment_output import save_experiment_outputs, save_round_result
 from exp_manager.services.pretrained_model import parse_pretrained_global_model
 from exp_manager.services.rest_client import RestClient
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
+from common.model import load_model_checkpoint
 
 
 CONTINUOUS_ENVIRONMENTS = {
@@ -103,6 +112,7 @@ class ExperimentManager:
         self.dlg_images_by_round = {}
         self.dlg_labels_by_round = {}
         self.dlg_results_by_round = {}
+        self.dlg_checkpoints_by_round = {}
         self.dlg_participant_by_round = {}
         self.config = {
             **TrainingSettings().to_dict(),
@@ -330,7 +340,11 @@ class ExperimentManager:
                 raise RuntimeError("진행 중인 라운드가 종료될 때까지 기다려 주세요.")
             self._validate_config()
             directory = self.results_dir / self.config["experiment_id"]
-            if (directory / "results.json").exists() or any((directory / "rounds").glob("*.json")):
+            if (
+                (directory / "results.json").exists()
+                or (directory / "experiment_info.json").exists()
+                or any((directory / "rounds").glob("*.json"))
+            ):
                 raise RuntimeError("결과가 이미 있는 실험 ID입니다. 새 ID를 입력하세요.")
             server_process = self.process_manager.server_process
             if not server_process or server_process.poll() is not None:
@@ -350,6 +364,7 @@ class ExperimentManager:
                 continuous_experiment=None,
                 message="실험을 시작했습니다.",
             )
+            self._write_experiment_info(self.config)
             self.worker = threading.Thread(target=self._run, daemon=True)
             self.worker.start()
             return self.status()
@@ -886,9 +901,231 @@ class ExperimentManager:
             "case_count": total_cases,
             "scenario": config["continuous_scenario"],
             "configuration": stored_config,
+            "data_split": self._data_split_snapshot(),
         }
         (experiment_dir / "experiment_info.json").write_text(
             json.dumps(info, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+
+    def _data_split_snapshot(self) -> dict | None:
+        data_manager = getattr(self, "data_manager", None)
+        if data_manager is None:
+            return None
+        snapshot = data_manager.status()
+        if not snapshot.get("configured"):
+            return None
+        manifest_path = snapshot.get("split_manifest_path")
+        manifest = (
+            json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            if manifest_path and Path(manifest_path).is_file()
+            else {}
+        )
+        return {
+            "seed": snapshot.get("seed"),
+            "split_id": snapshot.get("split_id"),
+            "source_dir": snapshot["test_range"]["source_dir"],
+            "test_range": snapshot["test_range"],
+            "client_ranges": snapshot["client_ranges"],
+            "file_sha256": manifest.get("file_sha256", {}),
+            "manifest_path": snapshot.get("split_manifest_path"),
+        }
+
+    def _write_experiment_info(
+        self,
+        config: dict,
+        *,
+        replay_of: dict | None = None,
+        data_split: dict | None = None,
+    ):
+        experiment_dir = self.results_dir / config["experiment_id"]
+        experiment_dir.mkdir(parents=True, exist_ok=True)
+        stored_config = {
+            key: value
+            for key, value in config.items()
+            if key not in {"pretrained_global_model", "dlg_image"}
+        }
+        info = {
+            "experiment_id": config["experiment_id"],
+            "experiment_type": config.get("experiment_type", "federated"),
+            "configuration": stored_config,
+            "data_split": data_split or self._data_split_snapshot(),
+            "replay_of": replay_of,
+        }
+        if config.get("pretrained_global_model") is not None:
+            info["pretrained_global_model_hash"] = config[
+                "pretrained_global_model"
+            ].get("initial_model_hash")
+        if config.get("dlg_image"):
+            info["dlg_image_sha256"] = hashlib.sha256(
+                bytes(round(pixel * 255) for pixel in config["dlg_image"])
+            ).hexdigest()
+        info_path = experiment_dir / "experiment_info.json"
+        if info_path.is_file():
+            previous_info = json.loads(info_path.read_text(encoding="utf-8"))
+            if info["data_split"] is None:
+                info["data_split"] = previous_info.get("data_split")
+            info = {**previous_info, **info}
+        info_path.write_text(
+            json.dumps(info, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+
+    def replay_round(self, experiment_id: str, round_id: int) -> dict:
+        """저장된 설정·분할·라운드 시작 모델로 한 라운드를 새 실험으로 재실행한다."""
+        positive_int(round_id, "round")
+        if not isinstance(experiment_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}", experiment_id
+        ):
+            raise ValueError("실험 ID 형식이 올바르지 않습니다.")
+        source_dir = self.results_dir / experiment_id
+        if not source_dir.resolve().is_relative_to(self.results_dir.resolve()):
+            raise ValueError("실험 결과 경로가 올바르지 않습니다.")
+        info_path = source_dir / "experiment_info.json"
+        if info_path.is_file():
+            saved_info = json.loads(info_path.read_text(encoding="utf-8"))
+            if saved_info.get("experiment_type") == "dlg":
+                return self.replay_dlg(experiment_id, saved_info)
+        result_path = source_dir / "rounds" / f"round_{round_id:03d}.json"
+        if not info_path.is_file() or not result_path.is_file():
+            raise FileNotFoundError("저장된 실험 설정 또는 라운드 로그가 없습니다.")
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+        saved = json.loads(result_path.read_text(encoding="utf-8"))
+        split = info.get("data_split")
+        if not split:
+            raise ValueError("재실행에 필요한 데이터 분할 스냅샷이 없습니다.")
+        source_root = Path(split["source_dir"]).resolve()
+        for relative_path, expected_hash in split.get("file_sha256", {}).items():
+            dataset_path = (source_root / relative_path).resolve()
+            if not dataset_path.is_relative_to(source_root) or not dataset_path.is_file():
+                raise ValueError("저장된 데이터 분할 파일을 찾을 수 없거나 경로가 올바르지 않습니다.")
+            actual_hash = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                raise ValueError(f"재실행 데이터가 변경되었습니다: {relative_path}")
+        model_path = Path(saved.get("start_checkpoint", ""))
+        if (
+            not model_path.resolve().is_relative_to(source_dir.resolve())
+            or not model_path.is_file()
+        ):
+            raise FileNotFoundError("라운드 시작 모델 체크포인트가 없습니다.")
+        model = load_model_checkpoint(model_path)
+        if model.get("model_hash") != saved.get("start_model_hash"):
+            raise ValueError("라운드 체크포인트 해시가 저장된 로그와 다릅니다.")
+
+        rest = self.rest_client
+        server_url = self.process_manager.server_url()
+        rest.post_json(
+            f"{server_url}/api/dataset/range",
+            split["test_range"],
+        )
+        ranges_by_client = {
+            item["client_id"]: item["ranges"] for item in split["client_ranges"]
+        }
+        for client_id in range(self.client_count):
+            rest.post_json(
+                f"{self.process_manager.client_url(client_id)}/api/dataset/range",
+                {"source_dir": split["source_dir"], "ranges": ranges_by_client[client_id]},
+            )
+
+        replay_id = f"{experiment_id[:60]}-replay-r{round_id}-{uuid.uuid4().hex[:8]}"
+        configuration = deepcopy(info["configuration"])
+        configuration.update(
+            experiment_id=replay_id,
+            seed=saved["round_config"]["seed"],
+        )
+        self.update_config(configuration)
+        self._write_experiment_info(
+            self.get_config(),
+            replay_of={"experiment_id": experiment_id, "round": round_id},
+            data_split=split,
+        )
+        replay_payload = {
+            **saved["round_config"],
+            "experiment_id": replay_id,
+            "round": round_id,
+            "seed": saved["round_config"]["seed"],
+            "initial_global_model": model,
+            "nums_clients": self.client_count,
+            "experiment_manager_url": self.process_manager.manager_url(),
+        }
+        return self.execute_single_round(round_id, replay_payload)
+
+    def replay_dlg(self, experiment_id: str, info: dict | None = None) -> dict:
+        """저장된 DLG 체크포인트·원본 이미지·레이블로 복원 공격을 재실행한다."""
+        if not isinstance(experiment_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}", experiment_id
+        ):
+            raise ValueError("실험 ID 형식이 올바르지 않습니다.")
+        source_dir = self.results_dir / experiment_id
+        if not source_dir.resolve().is_relative_to(self.results_dir.resolve()):
+            raise ValueError("실험 결과 경로가 올바르지 않습니다.")
+        info = info or json.loads(
+            (source_dir / "experiment_info.json").read_text(encoding="utf-8")
+        )
+        input_path = source_dir / "dlg_inputs.json"
+        result_path = source_dir / "dlg_result.json"
+        model_path = source_dir / "inputs" / "model.pt"
+        if not input_path.is_file() or not result_path.is_file() or not model_path.is_file():
+            raise FileNotFoundError("DLG 재실행에 필요한 입력·모델 파일이 없습니다.")
+        dlg_input = json.loads(input_path.read_text(encoding="utf-8"))
+        prior_result = json.loads(result_path.read_text(encoding="utf-8"))
+        model = load_model_checkpoint(model_path)
+        if model.get("model_hash") and model["model_hash"] != dlg_input.get("checkpoint_hash"):
+            raise ValueError("저장된 DLG 체크포인트 해시가 입력 기록과 다릅니다.")
+        replay_id = f"{experiment_id[:60]}-replay-{uuid.uuid4().hex[:8]}"
+        configuration = deepcopy(info.get("configuration", {}))
+        configuration.update(
+            experiment_id=replay_id,
+            experiment_type="dlg",
+            use_pretrained_global_model=True,
+            pretrained_model_format="json",
+            pretrained_global_model=model,
+            dlg_image=dlg_input["image"],
+            dlg_label=dlg_input["label"],
+            dlg_client_id=prior_result["client_id"],
+            dlg_iterations=dlg_input["dlg_iterations"],
+            dlg_noise_sigma=dlg_input["noise_sigma"],
+            dlg_defense_enabled=dlg_input["defense_enabled"],
+            continuous_dlg=True,
+            round_configs=[],
+        )
+        with self.lock:
+            if self.state["status"] in {"running", "stopping"} or self._continuous_is_active():
+                raise RuntimeError("다른 실험이 실행 중입니다.")
+            self.config = {**self.config, **configuration}
+            self._validate_config()
+        self._write_experiment_info(
+            self.get_config(),
+            replay_of={"experiment_id": experiment_id, "round": prior_result["round"]},
+            data_split=info.get("data_split"),
+        )
+        self._save_dlg_replay_inputs(replay_id, model, dlg_input)
+        return self.execute_single_round(
+            prior_result["round"],
+            {
+                "experiment_id": replay_id,
+                "round": prior_result["round"],
+                "round_type": "dlg",
+                "seed": configuration["seed"],
+            },
+        )
+
+    def _save_dlg_replay_inputs(self, experiment_id: str, model: dict, dlg_input: dict):
+        experiment_dir = self.results_dir / experiment_id
+        model_path = experiment_dir / "inputs" / "model.pt"
+        save_model_checkpoint(model, model_path)
+        image_bytes = bytes(round(pixel * 255) for pixel in dlg_input["image"])
+        (experiment_dir / "dlg_inputs.json").write_text(
+            json.dumps(
+                {
+                    **dlg_input,
+                    "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+                    "model_checkpoint": str(model_path),
+                },
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            ),
             encoding="utf-8",
         )
 
@@ -921,6 +1158,7 @@ class ExperimentManager:
                     self.dlg_images_by_round.clear()
                     self.dlg_labels_by_round.clear()
                     self.dlg_results_by_round.clear()
+                    self.dlg_checkpoints_by_round.clear()
                     self.state.update(
                         status="running",
                         current_round=0,
@@ -1052,6 +1290,7 @@ class ExperimentManager:
             self.dlg_images_by_round.clear()
             self.dlg_labels_by_round.clear()
             self.dlg_results_by_round.clear()
+            self.dlg_checkpoints_by_round.clear()
         return self.status()
 
     def _run(self):
@@ -1153,6 +1392,7 @@ class ExperimentManager:
                 "experiment_id": round_config["experiment_id"],
                 "round": 0,
             }
+            self.dlg_checkpoints_by_round[round_id] = checkpoint
             participant_payload.update(
                 global_model=checkpoint,
                 model_version=checkpoint.get("model_version", 0),
@@ -1162,6 +1402,9 @@ class ExperimentManager:
                 participant_payload,
                 timeout=float(round_config.get("round_timeout", 900)) + 120.0,
             )
+        self.dlg_checkpoints_by_round[round_id] = self.rest_client.get_json(
+            f"{self.process_manager.server_url()}/api/model/global"
+        )
         return self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/dlg/participant",
             participant_payload,
@@ -1224,6 +1467,26 @@ class ExperimentManager:
             result["original_image"] = original_image
         output_dir = self.results_dir / config["experiment_id"]
         output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_model = self.dlg_checkpoints_by_round.get(round_id)
+        if checkpoint_model is None:
+            raise RuntimeError("DLG 재실행용 모델 체크포인트를 찾을 수 없습니다.")
+        dlg_input = {
+            "image": original_image,
+            "label": original_label,
+            "noise_sigma": result.get("noise_sigma", 0.0),
+            "defense_enabled": result.get("defense_enabled", False),
+            "dlg_iterations": result.get("iterations", config.get("dlg_iterations", 200)),
+            "checkpoint_hash": weights_hash(checkpoint_model["weights"]),
+        }
+        dlg_input["image_sha256"] = hashlib.sha256(
+            bytes(round(pixel * 255) for pixel in original_image)
+        ).hexdigest()
+        result["original_image_sha256"] = dlg_input["image_sha256"]
+        result["checkpoint_hash"] = dlg_input["checkpoint_hash"]
+        self._save_dlg_replay_inputs(
+            config["experiment_id"], checkpoint_model, dlg_input
+        )
+        self._write_experiment_info(config)
         from exp_manager.services.dlg_report import save_dlg_images
         result["images"] = save_dlg_images(
             original_image, result["reconstructed_image"], output_dir
@@ -1481,6 +1744,7 @@ class ExperimentManager:
             raise ValueError("실험 ID 변경 후 설정을 먼저 저장하세요.")
         if (self.results_dir / config["experiment_id"] / "rounds" / f"round_{round_id:03d}.json").exists():
             raise RuntimeError("이미 저장된 라운드입니다. 새 실험 ID를 사용하세요.")
+        self._write_experiment_info(config)
 
         inherited = self._round_config(round_id, config)
         round_config = {**inherited, **round_config}

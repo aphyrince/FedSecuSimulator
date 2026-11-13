@@ -2,6 +2,8 @@
 
 from typing import Any
 from copy import deepcopy
+from datetime import datetime, timezone
+import time
 
 from clients.services.local_training import train_local_model
 from clients.services.local_training import count_dataset_samples
@@ -36,6 +38,8 @@ def run_local_training(
         malicious=bool(round_context.get("malicious", False)),
         delayed=bool(round_context.get("delayed", False)),
     )
+    training_started_at = datetime.now(timezone.utc)
+    started_clock = time.monotonic()
     training_result = train_local_model(
         global_model=global_model,
         dataset_range=state.dataset_range,
@@ -46,10 +50,14 @@ def run_local_training(
     )
     extracted_update = {"values": training_result["model_delta"],
                         "update_norm": weights_norm(training_result["model_delta"])}
+    training_completed_at = datetime.now(timezone.utc)
     training_record = {
         "round": round_id,
         "client_id": client_id,
         "status": "completed",
+        "training_started_at": training_started_at.isoformat(),
+        "training_completed_at": training_completed_at.isoformat(),
+        "training_duration_seconds": time.monotonic() - started_clock,
         "extracted_update": extracted_update,
         **training_result,
     }
@@ -84,6 +92,10 @@ def build_round_update(
         "malicious": malicious,
         "valid": True,
         "num_samples": training.get("num_samples", 0) if has_round_training else 0,
+        "training_accuracy": training.get("training_accuracy") if has_round_training else None,
+        "training_started_at": training.get("training_started_at") if has_round_training else None,
+        "training_completed_at": training.get("training_completed_at") if has_round_training else None,
+        "training_duration_seconds": training.get("training_duration_seconds") if has_round_training else None,
         "local_model": deepcopy(training["local_model"]),
         "dataset_fingerprint": training["dataset_fingerprint"],
         "update": {

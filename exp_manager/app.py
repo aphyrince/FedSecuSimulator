@@ -26,12 +26,13 @@ def create_app(
     process_manager = ProcessManager(
         host, client_count, server_port, client_base_port, port
     )
+    data_manager = DataDistributionManager(process_manager, client_count)
     experiment_manager = ExperimentManager(
         process_manager=process_manager,
         results_dir=PROJECT_ROOT_PATH / "results",
         client_count=client_count,
     )
-    data_manager = DataDistributionManager(process_manager, client_count)
+    experiment_manager.data_manager = data_manager
     app.extensions["process_manager"] = process_manager
     app.extensions["experiment_manager"] = experiment_manager
     app.extensions["data_manager"] = data_manager

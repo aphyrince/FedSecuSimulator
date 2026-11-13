@@ -158,14 +158,37 @@ def test_continuous_dlg_result_persists_the_shared_original_label_and_image():
             config["dlg_image"],
             config["dlg_label"],
         )
+        manager.dlg_checkpoints_by_round[1] = config["pretrained_global_model"]
         result_path = manager.record_dlg_result(
-            1, {"reconstructed_image": config["dlg_image"]}
+            1,
+            {
+                "client_id": 1,
+                "reconstructed_image": config["dlg_image"],
+                "iterations": config["dlg_iterations"],
+            },
         )
 
         result = json.loads(result_path.read_text(encoding="utf-8"))
         assert result["original_label"] == 4
         assert result["original_image"] == config["dlg_image"]
         assert result["experiment_id"] == config["experiment_id"]
+        replay_inputs = json.loads(
+            (result_path.parent / "dlg_inputs.json").read_text(encoding="utf-8")
+        )
+        assert replay_inputs["image"] == config["dlg_image"]
+        assert replay_inputs["label"] == config["dlg_label"]
+        assert (result_path.parent / "inputs" / "model.pt").is_file()
+        assert replay_inputs["image_sha256"]
+        manager.state["status"] = "completed"
+        manager.state["continuous_experiment"]["status"] = "completed"
+        with patch.object(manager, "execute_single_round", return_value={"round": 1}) as execute:
+            replayed = manager.replay_dlg(config["experiment_id"])
+        replay_config = manager.get_config()
+        assert replayed == {"round": 1}
+        assert replay_config["dlg_image"] == config["dlg_image"]
+        assert replay_config["dlg_label"] == config["dlg_label"]
+        assert replay_config["dlg_client_id"] == 1
+        assert execute.call_args.args[1]["round_type"] == "dlg"
 
 
 def test_continuous_dlg_sends_original_only_to_client():

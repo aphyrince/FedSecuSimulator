@@ -139,17 +139,17 @@ class ApiTests(unittest.TestCase):
             server.config["RESULTS_DIR"] = str(self.root)
             api = server.test_client()
             clients = {}
-            for client_id, count in ((0, 2), (1, 6)):
+            for client_id, count in ((0, 2), (1, 6), (2, 6)):
                 app = create_client_app(client_id, 5101 + client_id)
                 app.config["SERVER_URL"] = "http://server"
                 app.extensions["client_state"].results_dir = self.root
                 app.extensions["client_state"].set_dataset_range({"source_dir": "unused", "ranges": [{"file": "fake", "start": 0, "end": count}]})
                 clients[f"client{client_id}"] = app.test_client()
-            server.extensions["clients"] = {i: {"client_id": i, "url": f"http://client{i}"} for i in range(2)}
+            server.extensions["clients"] = {i: {"client_id": i, "url": f"http://client{i}"} for i in range(3)}
             server.extensions["dataset_range"] = {"source_dir": "unused", "ranges": [{"file": "fake", "start": 0, "end": 10}]}
             config = {"experiment_id": "attack" if attack else "normal", "round": 1, "seed": 42,
                       "model_config": {"channels": [2, 3], "hidden_size": 4},
-                      "nums_clients": 2, "participation_rate": 1.0, "delay_clients": [],
+                      "nums_clients": 3, "participation_rate": 1.0, "delay_clients": [],
                       "malicious_clients": [0, 1], "attack_enabled": attack, "attack_scale": -5.0,
                       "defense_enabled": False, "defense": "none", "round_timeout": 60.0,
                       "local_epochs": 3, "batch_size": 7, "learning_rate": 0.02}
@@ -167,11 +167,12 @@ class ApiTests(unittest.TestCase):
                 update = make_update(global_model, client_id, delta, samples=2 if client_id == 0 else 6)
                 result = {"local_model": update["local_model"], "model_delta": encode_weights(delta),
                           "num_samples": update["num_samples"], "training_loss": 1.0,
+                          "training_accuracy": 0.5,
                           "base_model_hash": weights_hash(base), "base_model_version": global_model["model_version"],
                           "dataset_fingerprint": f"train-{client_id}", "training_config": training_config}
                 with training_lock:
                     training_state["completed"] += 1
-                    if training_state["completed"] == 2:
+                    if training_state["completed"] == 3:
                         all_training_finished.set()
                 return result
 
@@ -189,7 +190,7 @@ class ApiTests(unittest.TestCase):
                     )
                 return response.get_json()
 
-            global_delivery_barrier = threading.Barrier(2)
+            global_delivery_barrier = threading.Barrier(3)
             evaluation = {"accuracy": 0.25, "loss": 1.0, "num_test_samples": 10, "correct_predictions": 2,
                           "metrics": {}, "dataset_fingerprint": "same-test"}
             with patch("clients.services.training_service.train_local_model", side_effect=fake_train), \
@@ -199,9 +200,18 @@ class ApiTests(unittest.TestCase):
                 response = api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"})
             self.assertEqual(response.status_code, 200, response.get_json())
             result = response.get_json()
-            self.assertEqual(result["accepted_clients"], [0, 1])
+            self.assertEqual(result["accepted_clients"], [0, 1, 2])
             self.assertEqual(result["attack_applied"], attack)
-            expected_delta = -10.0 if attack else 2.5
+            client_values = {
+                client_id: (-10.0 if attack and client_id in (0, 1) else 1.0 if client_id == 0 else 3.0)
+                for client_id in range(3)
+            }
+            weights = result["fedavg_client_weights"]
+            self.assertAlmostEqual(sum(weights.values()), 1.0)
+            expected_delta = sum(
+                weights[str(client_id)] * client_values[client_id]
+                for client_id in range(3)
+            )
             final = decode_weights(server.extensions["global_model"]["weights"])
             for key in initial:
                 torch.testing.assert_close(final[key], initial[key] + expected_delta, atol=2e-6, rtol=1e-5)
@@ -209,25 +219,90 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn("weights", result["global_model"])
             self.assertNotIn("values", result["client_updates"][0]["update"])
             self.assertEqual(result["accuracy"], 0.25)
+            self.assertTrue(all(item["status"] == "accepted" for item in result["client_activity"]))
+            self.assertEqual(result["client_activity"][0]["training_accuracy"], 0.5)
+            self.assertIsNotNone(result["client_activity"][0]["update_norm_before_defense"])
+            self.assertIsNotNone(result["client_activity"][0]["update_norm_after_defense"])
             self.assertEqual(api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"}).status_code, 409)
             outcomes[attack] = result
         self.assertEqual(starts[0][2], starts[1][2])
-        self.assertEqual(starts[0][2], starts[2][2])
+        self.assertEqual(starts[0][2], starts[3][2])
         self.assertEqual(outcomes[False]["initial_model_hash"], outcomes[True]["initial_model_hash"])
-        self.assertEqual(submission_before_all_training_finished, [False] * 4)
+        self.assertEqual(submission_before_all_training_finished, [False] * 6)
 
     def test_failed_evaluation_returns_failure_without_fake_accuracy_or_model_commit(self):
         app = create_server_app("127.0.0.1", 5000)
         app.config["RESULTS_DIR"] = str(self.root)
         model = vector_model()
         app.extensions["global_model"] = model
-        update = make_update(model, 0, {"w": [1.0, 2.0]})
+        updates = [
+            make_update(model, client_id, {"w": [1.0, 2.0]})
+            for client_id in range(3)
+        ]
         with patch("server.routes.aggregation.evaluate_global_model", side_effect=ValueError("missing test dataset")):
-            response = app.test_client().post("/api/rounds/1/execute", json={"experiment_id": "test", "selected_clients": [0], "updates": [update]})
+            response = app.test_client().post(
+                "/api/rounds/1/execute",
+                json={
+                    "experiment_id": "test",
+                    "selected_clients": [0, 1, 2],
+                    "updates": updates,
+                    "nums_clients": 3,
+                },
+            )
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("accuracy", response.get_json())
         self.assertEqual(app.extensions["global_model"], model)
         self.assertFalse(app.extensions["round_results"])
+
+    def test_fewer_than_three_updates_are_logged_without_model_update(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.config["RESULTS_DIR"] = str(self.root)
+        model = vector_model()
+        model["experiment_id"] = "small-cohort"
+        app.extensions["global_model"] = model
+        updates = [
+            make_update(model, client_id, {"w": [1.0, 2.0]})
+            for client_id in range(2)
+        ]
+        evaluation = {
+            "accuracy": 0.4,
+            "loss": 1.0,
+            "num_test_samples": 10,
+            "dataset_fingerprint": "test",
+        }
+        with patch("server.routes.aggregation.evaluate_global_model", return_value=evaluation):
+            response = app.test_client().post(
+                "/api/rounds/1/execute",
+                json={
+                    "experiment_id": "small-cohort",
+                    "selected_clients": [0, 1],
+                    "updates": updates,
+                    "malicious_clients": [0],
+                    "nums_clients": 5,
+                    "attack_enabled": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        result = response.get_json()
+        self.assertFalse(result["model_updated"])
+        self.assertEqual(result["reason"], "insufficient_accepted_updates")
+        self.assertEqual(result["malicious_ratio"], 0.2)
+        self.assertEqual(result["accepted_malicious_ratio"], 0.5)
+        self.assertEqual(app.extensions["global_model"], model)
+        with patch("server.routes.aggregation.evaluate_global_model", return_value=evaluation):
+            empty_response = app.test_client().post(
+                "/api/rounds/2/execute",
+                json={
+                    "experiment_id": "small-cohort",
+                    "selected_clients": [0],
+                    "updates": [],
+                    "malicious_clients": [0],
+                    "nums_clients": 5,
+                    "attack_enabled": True,
+                },
+            )
+        self.assertEqual(empty_response.status_code, 200)
+        self.assertEqual(empty_response.get_json()["accepted_malicious_ratio"], "N/A")
 
     def test_update_endpoint_rejects_duplicate_late_and_invalid_updates(self):
         app = create_server_app("127.0.0.1", 5000)
@@ -241,6 +316,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(api.post("/api/rounds/1/updates", json=update).status_code, 409)
         app.extensions["update_deadlines"] = {1: (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}
         self.assertEqual(api.post("/api/rounds/1/updates", json=update).status_code, 408)
+        self.assertEqual(app.extensions["update_submission_status"][1][0]["status"], "received")
+        self.assertEqual(
+            app.extensions["update_submission_attempts"][1][0]["reason"],
+            "num_samples must be an integer >= 1",
+        )
 
     def test_concurrent_submissions_match_server_and_manager_status(self):
         client_count = 10

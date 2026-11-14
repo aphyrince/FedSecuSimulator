@@ -4,7 +4,11 @@ from copy import deepcopy
 import hashlib
 from pathlib import Path
 import torch
-from fedsec.model import MODEL_FORMAT, DEFAULT_MODEL_CONFIG, PREPROCESSING, SmallCNN, model_config
+from fedsec.checkpoint import load_checkpoint
+from fedsec.model import (
+    DEFAULT_MODEL_CONFIG, MODEL_FORMAT, PREPROCESSING, SUPPORTED_ARCHITECTURES,
+    SmallCNN, create_model as create_torch_model, model_config,
+)
 from fedsec.validation import positive_int, finite_number
 
 
@@ -48,24 +52,23 @@ def weights_norm(weights: dict) -> float:
     return sum(t.double().square().sum().item() for t in decode_weights(weights).values()) ** 0.5
 
 
-def build_model(payload: dict) -> SmallCNN:
-    if payload.get("architecture") != MODEL_FORMAT:
-        raise ValueError("This operation requires a small_cnn_v1 model")
+def build_model(payload: dict) -> torch.nn.Module:
+    architecture = payload.get("architecture")
+    if architecture not in SUPPORTED_ARCHITECTURES:
+        raise ValueError("Unsupported model architecture")
     if payload.get("preprocessing") != PREPROCESSING:
         raise ValueError("Model preprocessing is incompatible with CIFAR-10 loading")
-    model = SmallCNN(payload.get("model_config"))
+    config = model_config(payload.get("model_config"), architecture=architecture)
+    model = create_torch_model(config=config)
     model.load_state_dict(decode_weights(payload.get("weights"), model.state_dict()), strict=True)
     return model
 
 
 def create_model(seed: int = 42, config=None) -> dict:
-    positive_int(seed, "seed", 0)
     config = model_config(config)
-    with torch.random.fork_rng(devices=[]):
-        torch.random.default_generator.manual_seed(seed)
-        model = SmallCNN(config)
+    model = create_torch_model(seed, config)
     weights = encode_weights(model.state_dict())
-    return {"model_version": 0, "architecture": MODEL_FORMAT, "model_config": config,
+    return {"model_version": 0, "architecture": config.get("architecture", MODEL_FORMAT), "model_config": config,
             "preprocessing": deepcopy(PREPROCESSING), "seed": seed,
             "num_parameters": sum(p.numel() for p in model.parameters()), "weights": weights,
             "initial_model_hash": weights_hash(weights)}
@@ -79,9 +82,6 @@ def save_model_checkpoint(payload: dict, path: Path) -> None:
 
 
 def load_model_checkpoint(path: str | Path) -> dict:
-    payload = torch.load(path, weights_only=True, map_location="cpu")
-    if payload.get("format_version") != 1 or weights_hash(payload["weights"]) != payload.get("model_hash"):
-        raise ValueError("Invalid model checkpoint")
+    payload = load_checkpoint(path)
     payload["weights"] = encode_weights(payload["weights"])
-    build_model(payload)
     return payload

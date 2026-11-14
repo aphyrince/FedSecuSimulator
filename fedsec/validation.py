@@ -14,3 +14,10 @@ def finite_number(value, name: str, *, positive=False) -> float:
     return float(value)
 
 
+def dropout_probability(value) -> float:
+    probability = finite_number(value, "dropout")
+    if not 0 <= probability < 1:
+        raise ValueError("dropout must be in [0, 1)")
+    return probability
+
+

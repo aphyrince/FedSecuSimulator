@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
 
+from fedsec.augmentation import AugmentedDataset
 from fedsec.config import TrainingSettings, setup_runtime
 from fedsec.contracts import LocalTrainingResult, EvaluationResult
 from fedsec.tensors import copy_state, extract_update
@@ -34,6 +35,8 @@ def train_local_model(global_model: nn.Module, dataset: Dataset, settings: Train
     seed = (positive_int(seed, "seed", 0) + round_id * 100003 + client_id) % 2**32
     device = setup_runtime(settings, seed)
     dataset = _limited(dataset, settings.max_train_samples)
+    if settings.augmentation != "none":
+        dataset = AugmentedDataset(dataset, settings.augmentation)
     initial = copy_state(global_model.state_dict())
     model = deepcopy(global_model).to(device)
     loader = DataLoader(dataset, batch_size=settings.batch_size, shuffle=True,
@@ -78,7 +81,9 @@ def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: T
     loader = DataLoader(dataset, batch_size=settings.batch_size, shuffle=False, num_workers=settings.num_workers)
     model = deepcopy(global_model).to(device)
     model.eval()
-    correct, count, loss_sum = 0, 0, 0.0
+    count, loss_sum = 0, 0.0
+    class_samples = torch.zeros(10, dtype=torch.long)
+    class_correct = torch.zeros_like(class_samples)
     with torch.no_grad():
         for images, labels in loader:
             images, labels = images.to(device), labels.to(device)
@@ -87,6 +92,15 @@ def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: T
             if not torch.isfinite(loss).item():
                 raise ValueError("Evaluation loss is NaN/Infinity")
             loss_sum += loss.item()
-            correct += (logits.argmax(1) == labels).sum().item()
+            matches = (logits.argmax(1) == labels).cpu()
+            labels = labels.cpu()
+            class_samples += torch.bincount(labels, minlength=10)
+            class_correct += torch.bincount(labels[matches], minlength=10)
             count += len(labels)
-    return EvaluationResult(correct / count, loss_sum / count, count, correct)
+    correct = int(class_correct.sum().item())
+    per_class = [
+        {"class_id": class_id, "num_samples": total, "correct_predictions": hits,
+         "accuracy": hits / total if total else None}
+        for class_id, (total, hits) in enumerate(zip(class_samples.tolist(), class_correct.tolist()))
+    ]
+    return EvaluationResult(correct / count, loss_sum / count, count, correct, per_class)

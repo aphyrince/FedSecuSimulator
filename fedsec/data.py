@@ -93,7 +93,10 @@ def load_datasets(manifest: dict, settings) -> tuple[dict[int, Dataset], Dataset
     root = Path(source)
     root = (root if root.is_absolute() else PROJECT_ROOT / root).resolve()
     seen = {}
-    for ranges in [*[item["ranges"] for item in clients], manifest["test_ranges"]]:
+    range_groups = [*[item["ranges"] for item in clients], manifest["test_ranges"]]
+    if "final_test_ranges" in manifest:
+        range_groups.append(manifest["final_test_ranges"])
+    for ranges in range_groups:
         for segment in ranges:
             path = (root / segment["file"]).resolve()
             if not path.is_relative_to(root):

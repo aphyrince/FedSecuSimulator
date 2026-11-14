@@ -25,7 +25,7 @@ def start():
     # 가상 라운드 실행을 백그라운드 스레드에서 시작한다.
     try:
         return jsonify(current_app.extensions["experiment_manager"].start())
-    except (RuntimeError, ValueError, TypeError) as exc:
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
         return jsonify(error=str(exc)), 409
 
 
@@ -60,6 +60,24 @@ def start_continuous_dlg():
         return jsonify(error=str(exc)), 409
 
 
+@experiment_bp.post("/api/experiment/continuous/linked/start")
+def start_continuous_linked():
+    """Run all federated cases and the three DLG noise cases per checkpoint."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify(error="연결 실험 설정은 객체 형식이어야 합니다."), 400
+        return jsonify(
+            current_app.extensions[
+                "experiment_manager"
+            ].start_continuous_linked_experiments(
+                payload.get("cases"), payload.get("dlg", {})
+            )
+        )
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
 @experiment_bp.post("/api/experiment/stop")
 def stop():
     return jsonify(current_app.extensions["experiment_manager"].stop())
@@ -68,6 +86,15 @@ def stop():
 @experiment_bp.get("/api/experiment/status")
 def status():
     return jsonify(current_app.extensions["experiment_manager"].status())
+
+
+@experiment_bp.get("/api/results/continuous")
+def continuous_results():
+    return jsonify(
+        current_app.extensions[
+            "experiment_manager"
+        ].continuous_results_summary()
+    )
 
 
 @experiment_bp.post("/api/experiment/reset")

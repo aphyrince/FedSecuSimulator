@@ -11,7 +11,13 @@ from fedsec.tensors import extract_update
 
 
 def count_dataset_samples(dataset_range: dict) -> int:
-    return sum(segment["end"] - segment["start"] for segment in dataset_range.get("ranges", []))
+    return sum(
+        segment["end"] - segment["start"]
+        for segment in dataset_range.get("ranges", [])
+    ) + sum(
+        len(segment["indices"])
+        for segment in dataset_range.get("indices_by_file", [])
+    )
 
 
 def train_local_model(global_model: dict, dataset_range: dict, training_config: dict,

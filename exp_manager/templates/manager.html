@@ -64,7 +64,27 @@
             <span>연속 DLG · 3개</span>
             <small>공격 · 노이즈 방어 2종</small>
           </button>
+          <button
+            id="continuous-linked-mode-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="continuous-linked-mode-panel"
+            onclick="selectRunMode('continuous-linked')"
+          >
+            <span>통합 실험</span>
+            <small>연합학습 24개 + 정상 체크포인트별 DLG 12개</small>
+          </button>
         </nav>
+
+        <div class="data-distribution-panel">
+          <div>
+            <h3>CIFAR-10 데이터 분배</h3>
+            <p id="data-status">데이터 분배 상태를 확인 중...</p>
+          </div>
+          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
+        </div>
 
         <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
         <div class="form-grid">
@@ -294,8 +314,7 @@
           <button
             id="start-experiment-button"
             class="start"
-            onclick="control('/api/experiment/start')"
-            disabled
+            onclick="startExperiment()"
           >
             실험 시작
           </button>
@@ -364,7 +383,6 @@
                 type="button"
                 class="start"
                 onclick="startContinuousExperiments()"
-                disabled
               >
                 연속 실험 시작 (24개)
               </button>
@@ -493,13 +511,216 @@
           <pre id="continuous-dlg-log" class="continuous-log"></pre>
         </section>
 
-        <div class="data-distribution-panel">
-          <div>
-            <h3>CIFAR-10 데이터 분배</h3>
-            <p id="data-status">데이터 분배 상태를 확인 중...</p>
+        <section
+          id="continuous-linked-mode-panel"
+          class="continuous-panel"
+          role="tabpanel"
+          aria-labelledby="continuous-linked-mode-tab"
+          hidden
+        >
+          <div class="continuous-heading">
+            <div>
+              <h3>통합 실험</h3>
+              <p>
+                연합학습 24개 조합을 모두 실행합니다. 각 환경의 정상 시나리오 4개 체크포인트에만
+                동일한 원본 이미지·레이블·복원 초기값으로 DLG 3조건을 적용합니다 (총 36개 실험).
+              </p>
+            </div>
           </div>
-          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
-        </div>
+          <div class="continuous-heading">
+            <div>
+              <h4>연속 연합학습 설정 (24개)</h4>
+              <p>각 환경·보안 조합의 학습 및 공격·방어 설정을 이 탭에서 직접 편집할 수 있습니다.</p>
+            </div>
+            <button
+              id="reset-continuous-linked-button"
+              type="button"
+              class="secondary"
+              onclick="resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status')"
+            >
+              기본 24개 조합으로 복원
+            </button>
+          </div>
+          <div id="continuous-linked-experiments" class="continuous-case-grid"></div>
+          <p id="continuous-linked-fl-status" class="continuous-dlg-help">
+            연속 연합학습 설정 24개가 준비되었습니다. 이 중 정상 시나리오 4개의 모델만 DLG에 사용됩니다.
+          </p>
+          <div class="continuous-dlg-input-grid">
+            <section class="continuous-dlg-input-card">
+              <h4>공통 DLG 원본 이미지와 레이블</h4>
+              <label>
+                원본 이미지
+                <input id="continuous-linked-original-image" type="file" accept="image/*" />
+              </label>
+              <label>
+                CIFAR-10 레이블
+                <select id="continuous-linked-label">
+                  <option value="" selected disabled>레이블 선택</option>
+                  <option value="0">0 · 비행기</option>
+                  <option value="1">1 · 자동차</option>
+                  <option value="2">2 · 새</option>
+                  <option value="3">3 · 고양이</option>
+                  <option value="4">4 · 사슴</option>
+                  <option value="5">5 · 개</option>
+                  <option value="6">6 · 개구리</option>
+                  <option value="7">7 · 말</option>
+                  <option value="8">8 · 배</option>
+                  <option value="9">9 · 트럭</option>
+                </select>
+              </label>
+              <img
+                id="continuous-linked-image-preview"
+                alt="연결 DLG 원본 이미지 미리보기"
+                hidden
+              />
+              <p id="continuous-linked-image-status" class="continuous-dlg-help">
+                업로드 이미지는 RGB 32×32로 변환되어 12개 DLG 실험에서 공통 사용됩니다.
+              </p>
+            </section>
+          </div>
+          <div class="continuous-dlg-options">
+            <label>
+              DLG 복원 반복 횟수
+              <input id="continuous-linked-iterations" type="number" min="1" max="1000" value="2" />
+            </label>
+            <label>
+              참가 클라이언트 (비우면 자동 선정)
+              <input id="continuous-linked-client" type="number" min="0" max="9" placeholder="자동 선정" />
+            </label>
+            <label>
+              노이즈 작음 σ
+              <input id="continuous-linked-noise-small" type="number" min="0" step="any" value="0.01" />
+            </label>
+            <label>
+              노이즈 큼 σ
+              <input id="continuous-linked-noise-large" type="number" min="0" step="any" value="0.1" />
+            </label>
+          </div>
+          <div class="continuous-actions">
+            <p id="continuous-linked-status">연합학습 설정을 확인하고 원본 이미지를 업로드해 주세요.</p>
+            <div class="continuous-action-buttons">
+              <button
+                id="start-continuous-linked-button"
+                type="button"
+                class="start"
+                onclick="startContinuousLinkedExperiments()"
+              >
+                통합 실험 시작 (36개)
+              </button>
+              <button
+                id="stop-continuous-linked-button"
+                type="button"
+                class="stop"
+                onclick="control('/api/experiment/stop')"
+                disabled
+              >
+                연결 실험 중단
+              </button>
+            </div>
+          </div>
+          <pre id="continuous-linked-log" class="continuous-log"></pre>
+          <section class="continuous-results" aria-labelledby="continuous-results-title">
+          <header class="continuous-results-header">
+            <div>
+              <p class="eyebrow">Experiment overview</p>
+              <h3 id="continuous-results-title">통합 실험 결과</h3>
+              <p>아래 건수는 저장된 모든 연속 배치 기준이며, 완료·실행 중·대기·실패 상태를 모두 포함합니다.</p>
+            </div>
+            <button
+              id="refresh-continuous-results"
+              type="button"
+              class="secondary results-refresh"
+              onclick="showLatestContinuousResults()"
+            >
+              최신 통합 실험 보기
+            </button>
+          </header>
+          <div class="continuous-results-content">
+            <div class="results-stat-grid" aria-label="연속 실험 요약">
+              <article class="results-stat">
+                <span>전체 케이스</span>
+                <strong id="results-total-count">—</strong>
+                <small>모든 연속 배치의 케이스 수</small>
+              </article>
+              <article class="results-stat">
+                <span>완료 케이스</span>
+                <strong id="results-completed-count">—</strong>
+                <small>상태가 완료인 케이스 수</small>
+              </article>
+              <article class="results-stat">
+                <span>연합학습 전체</span>
+                <strong id="results-fl-count">—</strong>
+                <small>상태와 무관한 케이스 수</small>
+              </article>
+              <article class="results-stat">
+                <span>DLG 복원 전체</span>
+                <strong id="results-dlg-count">—</strong>
+                <small>상태와 무관한 케이스 수</small>
+              </article>
+            </div>
+            <div class="results-source-controls">
+              <label>
+                통합 실험 결과 파일
+                <input
+                  id="continuous-results-manifest"
+                  type="file"
+                  accept=".json,application/json"
+                />
+              </label>
+              <span>통합 실험 폴더의 manifest.json을 선택하면 해당 결과를 표시합니다.</span>
+            </div>
+            <div class="results-toolbar">
+              <div>
+                <strong>실험 기록</strong>
+                <span id="continuous-results-status" aria-live="polite">
+                  저장된 결과를 불러오는 중...
+                </span>
+              </div>
+              <div class="results-filters">
+                <label>
+                  환경
+                  <select id="continuous-results-environment">
+                    <option value="all">전체 환경</option>
+                    <option value="baseline">기준</option>
+                    <option value="delay">지연</option>
+                    <option value="partial">부분 참여</option>
+                    <option value="label-bias">레이블 편향</option>
+                    <option value="dlg">외부 체크포인트 DLG</option>
+                  </select>
+                </label>
+                <label>
+                  실험 종류
+                  <select id="continuous-results-type">
+                    <option value="all">전체 종류</option>
+                    <option value="federated">연합학습</option>
+                    <option value="dlg">DLG</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="results-table-wrap">
+              <table class="results-table">
+                <thead>
+                  <tr>
+                    <th>운영 환경</th>
+                    <th>보안 시나리오</th>
+                    <th>종류</th>
+                    <th>테스트 정확도</th>
+                    <th>노이즈 σ</th>
+                    <th>복원 MSE</th>
+                    <th>상태</th>
+                    <th>실험 ID</th>
+                  </tr>
+                </thead>
+                <tbody id="continuous-results-rows"></tbody>
+              </table>
+            </div>
+            <p id="continuous-results-empty" class="results-empty" hidden>
+              선택한 조건에 해당하는 실험 결과가 없습니다.
+            </p>
+          </div>
+          </section>
+        </section>
 
         <p id="experiment-status">확인 중...</p>
         <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>

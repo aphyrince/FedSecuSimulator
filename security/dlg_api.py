@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import torch
 from common.model import build_model
@@ -48,6 +49,17 @@ def reconstruct_gradient_payload(global_model: dict, gradient: dict,
         raise ValueError('DLG 반복 횟수는 1~1000이어야 합니다.')
     torch.set_num_threads(1)
     model = build_model(global_model).eval()
+    parameter = next(model.parameters())
+    generator = torch.Generator(device=parameter.device).manual_seed(seed)
+    initial_image = torch.rand(
+        (1, *IMAGE_SHAPE),
+        device=parameter.device,
+        dtype=parameter.dtype,
+        generator=generator,
+    ) * 2.0 - 1.0
+    initial_image_hash = hashlib.sha256(
+        initial_image.detach().cpu().contiguous().numpy().tobytes()
+    ).hexdigest()
     params = tuple(model.parameters())
     values = gradient.get('values')
     if not isinstance(values, list) or len(values) != len(params):
@@ -71,6 +83,8 @@ def reconstruct_gradient_payload(global_model: dict, gradient: dict,
         'gradient_loss_before': found.match_loss_before,
         'gradient_loss': found.match_loss_after,
         'iterations': int(steps),
+        'reconstruction_initialization_seed': int(seed),
+        'reconstruction_initial_image_sha256': initial_image_hash,
     }
 
 

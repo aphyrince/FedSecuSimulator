@@ -34,33 +34,81 @@ class CifarRangeDataset(Dataset):
     def __init__(self, payload: dict, limit: int | None = None):
         if limit is not None:
             positive_int(limit, "sample limit")
-        if not isinstance(payload, dict) or not payload.get("source_dir") or not payload.get("ranges"):
+        if (
+            not isinstance(payload, dict)
+            or not payload.get("source_dir")
+            or not (payload.get("ranges") or payload.get("indices_by_file"))
+        ):
             raise ValueError("Distribute CIFAR-10 data before starting the experiment")
         root = Path(payload["source_dir"])
         root = (root if root.is_absolute() else PROJECT_ROOT / root).resolve()
         chunks, targets, records, seen = [], [], [], {}
         remaining = limit
-        for segment in payload["ranges"]:
+        segments = [
+            {**segment, "selection": "range"} for segment in payload.get("ranges", [])
+        ] + [
+            {**segment, "selection": "indices"}
+            for segment in payload.get("indices_by_file", [])
+        ]
+        for segment in segments:
             path = (root / segment["file"]).resolve()
             if not path.is_relative_to(root):
                 raise ValueError("Dataset file must stay inside source_dir")
-            start = positive_int(segment["start"], "range start", 0)
-            end = positive_int(segment["end"], "range end", 0)
             stat = path.stat()
             data, labels, digest = _read_batch(str(path), stat.st_size, stat.st_mtime_ns)
-            if not 0 <= start < end <= len(data):
-                raise ValueError("Dataset range is empty or out of bounds")
-            for previous_start, previous_end in seen.setdefault(str(path), []):
-                if start < previous_end and previous_start < end:
-                    raise ValueError("Dataset ranges overlap")
-            seen[str(path)].append((start, end))
-            used_end = end if remaining is None else min(end, start + remaining)
-            if used_end > start:
-                chunks.append(data[start:used_end])
-                targets.append(labels[start:used_end])
-                records.append({"file": path.relative_to(root).as_posix(), "sha256": digest, "start": start, "end": used_end})
+            if segment["selection"] == "range":
+                start = positive_int(segment["start"], "range start", 0)
+                end = positive_int(segment["end"], "range end", 0)
+                if not 0 <= start < end <= len(data):
+                    raise ValueError("Dataset range is empty or out of bounds")
+                for previous in seen.setdefault(str(path), []):
+                    if isinstance(previous, set):
+                        if any(start <= index < end for index in previous):
+                            raise ValueError("Dataset ranges overlap")
+                    elif start < previous[1] and previous[0] < end:
+                        raise ValueError("Dataset ranges overlap")
+                seen[str(path)].append((start, end))
+                sample_indices = np.arange(start, end, dtype=np.int64)
+            else:
+                raw_indices = segment.get("indices")
+                if not isinstance(raw_indices, list) or not raw_indices:
+                    raise ValueError("Dataset indices must be a non-empty list")
+                if any(
+                    type(index) is not int or not 0 <= index < len(data)
+                    for index in raw_indices
+                ) or len(set(raw_indices)) != len(raw_indices):
+                    raise ValueError("Dataset indices are duplicated or out of bounds")
+                previous_assignments = seen.setdefault(str(path), [])
+                if any(
+                    isinstance(previous, tuple)
+                    and any(previous[0] <= index < previous[1] for index in raw_indices)
+                    for previous in previous_assignments
+                ):
+                    raise ValueError("Dataset indices overlap")
+                assigned = {index for previous in previous_assignments if isinstance(previous, set) for index in previous}
+                if assigned.intersection(raw_indices):
+                    raise ValueError("Dataset indices overlap")
+                previous_assignments.append(set(raw_indices))
+                sample_indices = np.asarray(raw_indices, dtype=np.int64)
+            if remaining is not None:
+                sample_indices = sample_indices[:remaining]
+            if len(sample_indices):
+                chunks.append(data[sample_indices])
+                targets.append(labels[sample_indices])
+                record = {
+                    "file": path.relative_to(root).as_posix(),
+                    "sha256": digest,
+                }
+                if segment["selection"] == "range":
+                    record.update(
+                        start=int(sample_indices[0]),
+                        end=int(sample_indices[-1]) + 1,
+                    )
+                else:
+                    record["indices"] = sample_indices.tolist()
+                records.append(record)
                 if remaining is not None:
-                    remaining -= used_end - start
+                    remaining -= len(sample_indices)
         if not chunks:
             raise ValueError("Dataset is empty")
         self.images = np.concatenate(chunks).reshape(-1, 3, 32, 32)
@@ -92,20 +140,53 @@ def load_datasets(manifest: dict, settings) -> tuple[dict[int, Dataset], Dataset
         raise ValueError("Duplicate client ID in manifest")
     root = Path(source)
     root = (root if root.is_absolute() else PROJECT_ROOT / root).resolve()
-    seen = {}
-    for ranges in [*[item["ranges"] for item in clients], manifest["test_ranges"]]:
-        for segment in ranges:
+    seen_ranges = {}
+    seen_indices = {}
+    selections = [
+        [
+            {**segment, "selection": "range"}
+            for segment in item.get("ranges", [])
+        ]
+        + [
+            {**segment, "selection": "indices"}
+            for segment in item.get("indices_by_file", [])
+        ]
+        for item in clients
+    ] + [[{**segment, "selection": "range"} for segment in manifest["test_ranges"]]]
+    for selection in selections:
+        for segment in selection:
             path = (root / segment["file"]).resolve()
             if not path.is_relative_to(root):
                 raise ValueError("Dataset file must stay inside source_dir")
-            start = positive_int(segment["start"], "range start", 0)
-            end = positive_int(segment["end"], "range end")
-            if start >= end:
-                raise ValueError("Empty dataset range")
-            if any(start < old_end and old_start < end for old_start, old_end in seen.get(path, [])):
-                raise ValueError("Client/test dataset ranges overlap")
-            seen.setdefault(path, []).append((start, end))
-    datasets = {item["client_id"]: CifarRangeDataset({"source_dir": source, "ranges": item["ranges"]},
+            if segment["selection"] == "range":
+                start = positive_int(segment["start"], "range start", 0)
+                end = positive_int(segment["end"], "range end")
+                if start >= end:
+                    raise ValueError("Empty dataset range")
+                if any(
+                    start < old_end and old_start < end
+                    for old_start, old_end in seen_ranges.get(path, [])
+                ) or any(
+                    start <= index < end for index in seen_indices.get(path, set())
+                ):
+                    raise ValueError("Client/test dataset ranges overlap")
+                seen_ranges.setdefault(path, []).append((start, end))
+            else:
+                indices = segment.get("indices")
+                if not isinstance(indices, list) or any(
+                    type(index) is not int or index < 0 for index in indices
+                ) or len(indices) != len(set(indices)):
+                    raise ValueError("Invalid dataset indices")
+                selected = seen_indices.setdefault(path, set())
+                if selected.intersection(indices) or any(
+                    start <= index < end for start, end in seen_ranges.get(path, [])
+                ):
+                    raise ValueError("Client/test dataset indices overlap")
+                selected.update(indices)
+    datasets = {item["client_id"]: CifarRangeDataset({"source_dir": source, **{
+                                                        key: item.get(key, [])
+                                                        for key in ("ranges", "indices_by_file")
+                                                    }},
                                                     settings.max_train_samples) for item in clients}
     test = CifarRangeDataset({"source_dir": source, "ranges": manifest["test_ranges"]}, settings.max_test_samples)
     return datasets, test

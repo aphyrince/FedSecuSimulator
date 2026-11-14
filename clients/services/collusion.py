@@ -11,24 +11,27 @@ def collude_updates(global_model: dict, own_update: dict, peer_updates: list[dic
     positive_int(min_colluders, "min_colluders")
     updates = [own_update, *peer_updates]
     validate_updates(global_model, updates)
-    if len(updates) < min_colluders:
-        result = with_delta(global_model, own_update, update_delta(global_model, own_update))
-        original_norm = weights_norm(update_delta(global_model, own_update))
-        result["update"].update(
-            attack_applied=False,
-            attack_reason="insufficient_colluders",
-            norm_before_attack=original_norm,
-            norm_after_attack=original_norm,
-        )
-        return result
     deltas = [update_delta(global_model, item) for item in updates]
-    averaged_delta = collude_core(deltas, 1.0)
-    manipulated_delta = collude_core(deltas, scale)
+    averaged_delta = (
+        update_delta(global_model, own_update)
+        if len(deltas) == 1
+        else collude_core(deltas, 1.0)
+    )
+    manipulated_delta = (
+        {name: delta * scale for name, delta in deltas[0].items()}
+        if len(deltas) == 1
+        else collude_core(deltas, scale)
+    )
     result = with_delta(global_model, own_update, manipulated_delta)
     result["malicious"] = True
     result["update"].update(
         scale=scale,
         attack_applied=True,
+        attack_reason=(
+            "single_malicious_client_self_scaled"
+            if len(updates) == 1
+            else None
+        ),
         collusion_peer_count=len(peer_updates),
         norm_before_attack=weights_norm(averaged_delta),
         norm_after_attack=weights_norm(manipulated_delta),

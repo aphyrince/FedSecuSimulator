@@ -74,6 +74,9 @@ def test_continuous_dlg_cases_share_uploaded_checkpoint_image_and_label():
         ]
         assert [case["dlg_defense_enabled"] for case in cases] == [False, True, True]
         assert [case["dlg_noise_sigma"] for case in cases] == [0, 0.01, 0.1]
+        assert {case["dlg_initialization_seed"] for case in cases} == {
+            manager.config["seed"] + 1
+        }
         assert all(case["experiment_type"] == "dlg" for case in cases)
         assert all(case["use_pretrained_global_model"] for case in cases)
         assert all(case["dlg_client_id"] == 1 for case in cases)

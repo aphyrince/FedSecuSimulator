@@ -9,6 +9,14 @@ async function control(path) {
   await refresh();
 }
 
+async function startExperiment() {
+  if (!dataDistributed) {
+    alert('실험을 시작하기 전에 훈련/테스트 데이터 범위 분배를 실행하세요.');
+    return;
+  }
+  await control('/api/experiment/start');
+}
+
 async function saveExperimentConfig(overrides = {}) {
   const config = {
     experiment_id: document.getElementById('experiment-id').value,
@@ -230,11 +238,12 @@ function applyExperimentTemplate(templateName) {
         const continuousIsRunning = ['running', 'stopping'].includes(
           experiment.continuous_experiment?.status,
         );
+        document.getElementById('stop-experiment-button').disabled =
+          !['running', 'stopping'].includes(experiment.status) && !continuousIsRunning;
         document.getElementById('start-experiment-button').disabled =
-          !dataDistributed || ['running', 'stopping'].includes(experiment.status) || continuousIsRunning;
+          ['running', 'stopping'].includes(experiment.status) || continuousIsRunning;
         document.getElementById('start-continuous-button').disabled =
           continuousStartPending ||
-          !dataDistributed ||
           ['running', 'stopping'].includes(experiment.status) ||
           continuousIsRunning;
         const continuousDlgIsRunning =
@@ -251,6 +260,11 @@ function applyExperimentTemplate(templateName) {
         updateContinuousDlgStartButton();
         document.getElementById('stop-continuous-button').disabled =
           !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type === 'federated_dlg' ||
+          experiment.continuous_experiment.status !== 'running';
+        document.getElementById('stop-continuous-linked-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type !== 'federated_dlg' ||
           experiment.continuous_experiment.status !== 'running';
         const maliciousSelections = experiment.malicious_clients_by_round || {};
         const selectedRounds = Object.entries(maliciousSelections)
@@ -275,18 +289,18 @@ function applyExperimentTemplate(templateName) {
         const response = await fetch('/api/data/status');
         const data = await response.json();
         dataDistributed = Boolean(data.configured);
-        document.getElementById('start-experiment-button').disabled = !dataDistributed;
-        document.getElementById('stop-experiment-button').disabled = !dataDistributed;
+        setContinuousDataReady(dataDistributed);
         const statusResponse = await fetch('/api/experiment/status');
         const experiment = await statusResponse.json();
         const experimentIsRunning =
           ['running', 'stopping'].includes(experiment.status) ||
           ['running', 'stopping'].includes(experiment.continuous_experiment?.status);
         setContinuousExperimentBusy(experimentIsRunning);
+        document.getElementById('stop-experiment-button').disabled = !experimentIsRunning;
         document.getElementById('start-experiment-button').disabled =
-          !dataDistributed || experimentIsRunning;
+          experimentIsRunning;
         document.getElementById('start-continuous-button').disabled =
-          continuousStartPending || !dataDistributed || experimentIsRunning;
+          continuousStartPending || experimentIsRunning;
         continuousDlgRunning =
           experiment.continuous_experiment?.experiment_type === 'dlg' &&
           ['running', 'stopping'].includes(experiment.continuous_experiment.status);
@@ -297,16 +311,32 @@ function applyExperimentTemplate(templateName) {
         updateContinuousDlgStartButton();
         document.getElementById('stop-continuous-button').disabled =
           !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type === 'federated_dlg' ||
           experiment.continuous_experiment.status !== 'running';
+        document.getElementById('stop-continuous-linked-button').disabled =
+          !experiment.continuous_experiment ||
+          experiment.continuous_experiment.experiment_type !== 'federated_dlg' ||
+          experiment.continuous_experiment.status !== 'running';
+        const classDistribution = data.distribution === 'non_iid'
+          ? ` · 클라이언트별 클래스 수: ${(data.client_class_counts || [])
+            .map((item) => `${item.client_id}=${Object.entries(item.class_counts || {})
+              .filter(([, count]) => count > 0)
+              .map(([label, count]) => `${label}:${count}`)
+              .join(',')}`)
+            .join(' / ')}`
+          : '';
         document.getElementById('data-status').textContent =
-          `${data.message} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+          `${data.message} · 분포: ${data.distribution || '—'}${classDistribution} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
       }
 
       async function distributeData() {
         const response = await fetch('/api/data/distribute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ seed: 42 }),
+          body: JSON.stringify({
+            seed: Number(document.getElementById('seed').value) || 42,
+            distribution: document.getElementById('distribution').value,
+          }),
         });
         if (!response.ok) {
           alert((await response.json()).error);
@@ -356,6 +386,7 @@ function applyExperimentTemplate(templateName) {
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
         resetContinuousCases();
+        resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
         updateConditionalSettings();
       }
 
@@ -421,6 +452,7 @@ function applyExperimentTemplate(templateName) {
           ['individual', 'individual-mode-tab', 'individual-mode-panel'],
           ['continuous', 'continuous-mode-tab', 'continuous-mode-panel'],
           ['continuous-dlg', 'continuous-dlg-mode-tab', 'continuous-dlg-mode-panel'],
+          ['continuous-linked', 'continuous-linked-mode-tab', 'continuous-linked-mode-panel'],
         ];
         modes.forEach(([modeId, tabId, panelId]) => {
           const selected = modeId === mode;

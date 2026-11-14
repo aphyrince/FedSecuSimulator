@@ -45,6 +45,12 @@ let continuousDlgImagePixels = null;
 let continuousDlgStartPending = false;
 let continuousDlgRunning = false;
 let continuousExperimentBusy = false;
+let continuousLinkedImagePixels = null;
+let continuousLinkedStartPending = false;
+let continuousLinkedRunning = false;
+let lastContinuousSummaryBatchId = '';
+let continuousDataReady = false;
+let importedContinuousResults = null;
 
 function updateContinuousDlgStartButton() {
   const button = document.getElementById('start-continuous-dlg-button');
@@ -53,6 +59,16 @@ function updateContinuousDlgStartButton() {
       continuousExperimentBusy ||
       !continuousDlgCheckpointData || !continuousDlgImagePixels;
   }
+  const linkedButton = document.getElementById('start-continuous-linked-button');
+  if (linkedButton) {
+    linkedButton.disabled = continuousLinkedStartPending || continuousLinkedRunning ||
+      continuousExperimentBusy;
+  }
+}
+
+function setContinuousDataReady(ready) {
+  continuousDataReady = ready;
+  updateContinuousDlgStartButton();
 }
 
 function setContinuousExperimentBusy(busy) {
@@ -115,7 +131,10 @@ function renderContinuousCaseSettings(defaults) {
   `;
 }
 
-function resetContinuousCases() {
+function resetContinuousCases(
+  containerId = 'continuous-experiments',
+  statusId = 'continuous-experiment-status',
+) {
   const rounds = Number(document.getElementById('rounds').value) || 1;
   const attackScaleValue = document.getElementById('attack-scale').value;
   const attackScale = attackScaleValue === '' ? -5 : Number(attackScaleValue);
@@ -166,7 +185,7 @@ function resetContinuousCases() {
       </article>
     `),
   );
-  const container = document.getElementById('continuous-experiments');
+  const container = document.getElementById(containerId);
   container.innerHTML = cards.join('');
   container.querySelectorAll('.continuous-case-card').forEach((card, index) => {
     card.querySelector('.continuous-case-index').textContent =
@@ -174,7 +193,7 @@ function resetContinuousCases() {
     updateContinuousDefenseVisibility(card);
     updateContinuousRoundEditor(card);
   });
-  document.getElementById('continuous-experiment-status').textContent =
+  document.getElementById(statusId).textContent =
     `연속 실험 ${continuousCaseCount}개가 준비되었습니다.`;
 }
 
@@ -266,9 +285,9 @@ function updateContinuousRoundEditor(row) {
   });
 }
 
-function readContinuousCases() {
+function readContinuousCases(containerId = 'continuous-experiments') {
   return Array.from(
-    document.querySelectorAll('#continuous-experiments > .continuous-case-card'),
+    document.getElementById(containerId).querySelectorAll(':scope > .continuous-case-card'),
   ).map((row) => {
     const optionalNumber = (selector) => {
       const value = row.querySelector(selector).value;
@@ -310,6 +329,10 @@ function readContinuousCases() {
 }
 
 async function startContinuousExperiments() {
+  if (!continuousDataReady) {
+    alert('연속 실험을 시작하기 전에 훈련/테스트 데이터 범위 분배를 실행하세요.');
+    return;
+  }
   if (continuousStartPending) {
     return;
   }
@@ -341,8 +364,8 @@ async function startContinuousExperiments() {
     }
     renderContinuousExperimentStatus(result.continuous_experiment);
   } catch (error) {
-    const message = `연속 DLG 시작 요청에 실패했습니다: ${error.message}`;
-    document.getElementById('continuous-dlg-status').textContent = message;
+    const message = `연속 실험 시작 요청에 실패했습니다: ${error.message}`;
+    document.getElementById('continuous-experiment-status').textContent = message;
     alert(message);
   } finally {
     continuousStartPending = false;
@@ -401,6 +424,10 @@ function renderContinuousExperimentStatus(batch) {
   const active = ['running', 'stopping'].includes(batch.status);
   const current = batch.current_case || 0;
   const name = batch.current_case_name ? ` · ${batch.current_case_name}` : '';
+  if (!active && lastContinuousSummaryBatchId !== batch.batch_id) {
+    lastContinuousSummaryBatchId = batch.batch_id;
+    refreshContinuousResults();
+  }
   if (batch.experiment_type === 'dlg') {
     continuousDlgRunning = active;
     document.getElementById('continuous-dlg-status').textContent =
@@ -415,7 +442,37 @@ function renderContinuousExperimentStatus(batch) {
     updateContinuousDlgStartButton();
     return;
   }
+  if (batch.experiment_type === 'federated_dlg') {
+    continuousLinkedRunning = active;
+    document.getElementById('reset-continuous-linked-button').disabled = active;
+    document.querySelectorAll(
+      '#continuous-linked-experiments input, #continuous-linked-experiments select',
+    ).forEach((input) => {
+      input.disabled = active;
+    });
+    if (!active) {
+      document.querySelectorAll('#continuous-linked-experiments > .continuous-case-card')
+        .forEach(updateContinuousDefenseVisibility);
+      document.querySelectorAll('#continuous-linked-experiments .continuous-round-config-row')
+        .forEach((row) => {
+          row.querySelector('.continuous-round-defense').disabled =
+            !row.querySelector('.continuous-round-defense-enabled').checked;
+        });
+    }
+    document.getElementById('continuous-linked-status').textContent =
+      `${batch.status} · ${current}/${batch.total_cases}${name} · 배치 ${batch.batch_id}`;
+    document.getElementById('stop-continuous-linked-button').disabled =
+      batch.status !== 'running';
+    document.getElementById('continuous-linked-log').textContent = JSON.stringify(
+      batch.cases || [],
+      null,
+      2,
+    );
+    updateContinuousDlgStartButton();
+    return;
+  }
   continuousDlgRunning = false;
+  continuousLinkedRunning = false;
   document.getElementById('continuous-experiment-status').textContent =
     `${batch.status} · ${current}/${batch.total_cases}${name} · 배치 ${batch.batch_id}`;
   document.getElementById('reset-continuous-button').disabled = active;
@@ -438,6 +495,247 @@ function renderContinuousExperimentStatus(batch) {
     2,
   );
   updateContinuousDlgStartButton();
+}
+
+async function startContinuousLinkedExperiments() {
+  if (continuousLinkedStartPending || continuousLinkedRunning) {
+    return;
+  }
+  if (!continuousDataReady) {
+    alert('통합 실험을 시작하기 전에 훈련/테스트 데이터 범위 분배를 실행하세요.');
+    return;
+  }
+  if (!continuousLinkedImagePixels) {
+    alert('통합 실험의 공통 DLG 원본 이미지를 업로드하세요.');
+    return;
+  }
+  const labelValue = document.getElementById('continuous-linked-label').value;
+  if (labelValue === '') {
+    alert('통합 실험의 공통 DLG 레이블을 선택하세요.');
+    return;
+  }
+  continuousLinkedStartPending = true;
+  updateContinuousDlgStartButton();
+  document.getElementById('continuous-linked-status').textContent =
+    '연합학습 24개와 정상 체크포인트 기반 DLG 12개를 준비하고 있습니다...';
+  try {
+    if (document.getElementById('experiment-type').value !== 'federated') {
+      selectExperimentTab('federated');
+    }
+    const saved = await saveExperimentConfig({
+      experiment_type: 'federated',
+      use_pretrained_global_model: false,
+      pretrained_model_data: '',
+      round_configs: [],
+    });
+    if (!saved) {
+      return;
+    }
+    const clientValue = document.getElementById('continuous-linked-client').value;
+    const response = await fetch('/api/experiment/continuous/linked/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cases: readContinuousCases('continuous-linked-experiments'),
+        dlg: {
+          image: continuousLinkedImagePixels,
+          label: Number(labelValue),
+          dlg_iterations: Number(
+            document.getElementById('continuous-linked-iterations').value,
+          ),
+          dlg_client_id: clientValue === '' ? null : Number(clientValue),
+          noise_small: Number(
+            document.getElementById('continuous-linked-noise-small').value,
+          ),
+          noise_large: Number(
+            document.getElementById('continuous-linked-noise-large').value,
+          ),
+        },
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      document.getElementById('continuous-linked-status').textContent =
+        result.error || '연결 실험 시작에 실패했습니다.';
+      alert(result.error || '연결 실험을 시작하지 못했습니다.');
+      return;
+    }
+    renderContinuousExperimentStatus(result.continuous_experiment);
+  } catch (error) {
+    const message = `통합 실험 시작 요청에 실패했습니다: ${error.message}`;
+    document.getElementById('continuous-linked-status').textContent = message;
+    alert(message);
+  } finally {
+    continuousLinkedStartPending = false;
+    updateContinuousDlgStartButton();
+    await refresh();
+  }
+}
+
+function renderContinuousResults(cases, contextLabel) {
+  const status = document.getElementById('continuous-results-status');
+  const rows = document.getElementById('continuous-results-rows');
+  const totalCount = document.getElementById('results-total-count');
+  const completedCount = document.getElementById('results-completed-count');
+  const flCount = document.getElementById('results-fl-count');
+  const dlgCount = document.getElementById('results-dlg-count');
+  const environmentFilter = document.getElementById('continuous-results-environment');
+  const typeFilter = document.getElementById('continuous-results-type');
+  const empty = document.getElementById('continuous-results-empty');
+  if (!status || !rows || !totalCount || !completedCount || !flCount || !dlgCount) {
+    return;
+  }
+  totalCount.textContent = String(cases.length);
+  completedCount.textContent = String(cases.filter((item) => item.status === 'completed').length);
+  flCount.textContent = String(cases.filter((item) => item.experiment_type !== 'dlg').length);
+  dlgCount.textContent = String(cases.filter((item) => item.experiment_type === 'dlg').length);
+
+  const environmentLabels = {
+    baseline: ['기준 환경', 'env-baseline'],
+    delay: ['지연 환경', 'env-delay'],
+    partial: ['부분 참여', 'env-partial'],
+    'label-bias': ['레이블 편향', 'env-label-bias'],
+    dlg: ['DLG', 'env-dlg'],
+  };
+  const statusLabels = {
+    completed: ['완료', 'is-completed'],
+    running: ['실행 중', 'is-running'],
+    failed: ['실패', 'is-failed'],
+    stopped: ['중단', 'is-stopped'],
+    pending: ['대기', 'is-pending'],
+  };
+  const renderAccuracy = (value) => {
+    if (value == null || value === '') {
+      return '—';
+    }
+    const accuracy = Number(value);
+    if (!Number.isFinite(accuracy)) {
+      return '—';
+    }
+    const percentage = Math.min(100, Math.max(0, accuracy * 100));
+    return `<div class="result-accuracy"><strong>${percentage.toFixed(1)}%</strong><span class="result-accuracy-track" aria-hidden="true"><i style="width:${percentage}%"></i></span></div>`;
+  };
+  const renderRows = () => {
+    const environment = environmentFilter?.value === 'all' ? '' : environmentFilter?.value || '';
+    const type = typeFilter?.value === 'all' ? '' : typeFilter?.value || '';
+    const filtered = cases.filter((item) =>
+      (!environment || item.environment_template === environment) &&
+      (!type || item.experiment_type === type)
+    );
+    rows.innerHTML = filtered.map((item) => {
+      const [environmentLabel, environmentClass] = environmentLabels[item.environment_template] ||
+        [item.environment_label || '기타', 'env-dlg'];
+      const [statusLabel, statusClass] = statusLabels[item.status] || [item.status || '미확인', 'is-pending'];
+      const isDlg = item.experiment_type === 'dlg';
+      const sigma = item.noise_sigma == null ? NaN : Number(item.noise_sigma);
+      const mse = item.mse == null ? NaN : Number(item.mse);
+      return `
+        <tr>
+          <td><span class="result-environment-badge ${environmentClass}">${escapeAttribute(environmentLabel)}</span></td>
+          <td>${escapeAttribute(item.security_label || item.name || '—')}</td>
+          <td><span class="result-kind-pill ${isDlg ? 'dlg' : 'fl'}">${isDlg ? 'DLG' : '연합학습'}</span></td>
+          <td>${renderAccuracy(item.accuracy)}</td>
+          <td>${Number.isFinite(sigma) ? sigma.toFixed(4) : '—'}</td>
+          <td>${Number.isFinite(mse) ? mse.toExponential(3) : '—'}</td>
+          <td><span class="result-status-pill ${statusClass}">${escapeAttribute(statusLabel)}</span></td>
+          <td><span class="result-experiment-id" title="${escapeAttribute(item.experiment_id || '')}">${escapeAttribute(item.experiment_id || '—')}</span></td>
+        </tr>
+      `;
+    }).join('');
+    if (empty) {
+      empty.hidden = filtered.length > 0;
+      empty.textContent = cases.length
+        ? '선택한 필터에 해당하는 결과가 없습니다.'
+        : '아직 표시할 통합 실험 결과가 없습니다.';
+    }
+    return filtered.length;
+  };
+  if (environmentFilter) {
+    environmentFilter.onchange = renderRows;
+  }
+  if (typeFilter) {
+    typeFilter.onchange = renderRows;
+  }
+  const displayedCount = renderRows();
+  status.textContent = `${contextLabel} · ${displayedCount}개 표시`;
+}
+
+async function refreshContinuousResults() {
+  if (importedContinuousResults) {
+    renderContinuousResults(
+      importedContinuousResults.cases,
+      importedContinuousResults.context,
+    );
+    return;
+  }
+  const status = document.getElementById('continuous-results-status');
+  if (!status) {
+    return;
+  }
+  try {
+    const response = await fetch('/api/results/continuous');
+    const summary = await response.json();
+    if (!response.ok) {
+      throw new Error(summary.error || '결과 조회에 실패했습니다.');
+    }
+    const batch = summary.batch;
+    if (!batch) {
+      renderContinuousResults([], '저장된 통합 실험이 없습니다');
+      return;
+    }
+    const batchStatus = {
+      running: '실행 중',
+      stopping: '중단 처리 중',
+      completed: '완료',
+      failed: '실패',
+      stopped: '중단',
+    }[batch.status] || batch.status || '상태 미확인';
+    const startedAt = batch.started_at
+      ? new Date(batch.started_at).toLocaleString()
+      : '시작 시각 미기록';
+    renderContinuousResults(
+      summary.cases || [],
+      `최신 통합 실험 ${batch.batch_id} · ${batchStatus} · ${startedAt}`,
+    );
+  } catch (error) {
+    status.textContent = `결과를 불러오지 못했습니다: ${error.message}`;
+  }
+}
+
+function showLatestContinuousResults() {
+  importedContinuousResults = null;
+  const input = document.getElementById('continuous-results-manifest');
+  if (input) {
+    input.value = '';
+  }
+  refreshContinuousResults();
+}
+
+function loadContinuousResultsManifest(manifest, fileName) {
+  if (
+    !manifest
+    || manifest.experiment_type !== 'federated_dlg'
+    || !Array.isArray(manifest.cases)
+  ) {
+    throw new Error('통합 실험의 manifest.json 파일을 선택하세요.');
+  }
+  const cases = manifest.cases.map((item) => {
+    const configuration = item.configuration || {};
+    return {
+      ...item,
+      batch_id: manifest.batch_id,
+      batch_status: manifest.status,
+      noise_sigma: item.noise_sigma ?? configuration.noise_sigma ?? configuration.dlg_noise_sigma,
+    };
+  });
+  const startedAt = manifest.started_at
+    ? new Date(manifest.started_at).toLocaleString()
+    : '시작 시각 미기록';
+  importedContinuousResults = {
+    cases,
+    context: `파일 ${fileName} · 통합 실험 ${manifest.batch_id || 'ID 미기록'} · ${startedAt}`,
+  };
+  renderContinuousResults(cases, importedContinuousResults.context);
 }
 
 document.getElementById('continuous-dlg-checkpoint').addEventListener('change', async (event) => {
@@ -535,7 +833,72 @@ document.getElementById('continuous-dlg-label').addEventListener('change', () =>
   }
 });
 
-document.getElementById('continuous-experiments').addEventListener('change', (event) => {
+document.getElementById('continuous-linked-original-image').addEventListener(
+  'change',
+  async (event) => {
+    const [file] = event.target.files;
+    continuousLinkedImagePixels = null;
+    if (!file) {
+      document.getElementById('continuous-linked-image-preview').hidden = true;
+      document.getElementById('continuous-linked-image-status').textContent =
+        '업로드 이미지는 RGB 32×32로 변환되어 12개 DLG 실험에서 공통 사용됩니다.';
+      updateContinuousDlgStartButton();
+      return;
+    }
+    if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) {
+      alert('이미지 파일(10 MiB 이하)을 선택하세요.');
+      event.target.value = '';
+      updateContinuousDlgStartButton();
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) {
+        throw new Error('이미지 변환용 canvas를 사용할 수 없습니다.');
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, 32, 32);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(bitmap, 0, 0, 32, 32);
+      bitmap.close();
+      const rgba = context.getImageData(0, 0, 32, 32).data;
+      const pixels = [[], [], []];
+      for (let index = 0; index < rgba.length; index += 4) {
+        pixels[0].push(rgba[index] / 255);
+        pixels[1].push(rgba[index + 1] / 255);
+        pixels[2].push(rgba[index + 2] / 255);
+      }
+      continuousLinkedImagePixels = pixels.flat();
+      const preview = document.getElementById('continuous-linked-image-preview');
+      preview.src = canvas.toDataURL('image/png');
+      preview.hidden = false;
+      document.getElementById('continuous-linked-image-status').textContent =
+        `${file.name} · RGB 32×32 · 레이블 ${document.getElementById('continuous-linked-label').value}`;
+    } catch (error) {
+      continuousLinkedImagePixels = null;
+      document.getElementById('continuous-linked-image-status').textContent =
+        `이미지를 변환하지 못했습니다: ${error.message}`;
+      alert('이미지를 읽거나 32×32 크기로 변환하지 못했습니다.');
+    } finally {
+      updateContinuousDlgStartButton();
+    }
+  },
+);
+
+document.getElementById('continuous-linked-label').addEventListener('change', () => {
+  const file = document.getElementById('continuous-linked-original-image').files[0];
+  if (file && continuousLinkedImagePixels) {
+    document.getElementById('continuous-linked-image-status').textContent =
+      `${file.name} · RGB 32×32 · 레이블 ${document.getElementById('continuous-linked-label').value}`;
+  }
+});
+
+function handleContinuousCaseChange(event) {
   const row = event.target.closest('.continuous-case-card');
   if (!row) {
     return;
@@ -547,7 +910,40 @@ document.getElementById('continuous-experiments').addEventListener('change', (ev
   } else if (event.target.matches('.continuous-rounds')) {
     updateContinuousRoundEditor(row);
   }
-});
+}
+
+document.getElementById('continuous-experiments').addEventListener(
+  'change',
+  handleContinuousCaseChange,
+);
+document.getElementById('continuous-linked-experiments').addEventListener(
+  'change',
+  handleContinuousCaseChange,
+);
+
+document.getElementById('continuous-results-manifest').addEventListener(
+  'change',
+  async (event) => {
+    const [file] = event.target.files;
+    if (!file) {
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('통합 실험 manifest.json 파일은 10 MiB 이하여야 합니다.');
+      event.target.value = '';
+      return;
+    }
+    try {
+      loadContinuousResultsManifest(JSON.parse(await file.text()), file.name);
+    } catch (error) {
+      alert(error.message || '통합 실험 결과 파일을 읽지 못했습니다.');
+      event.target.value = '';
+    }
+  },
+);
+
+refreshContinuousResults();
 
 resetContinuousCases();
+resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
 updateContinuousDlgStartButton();

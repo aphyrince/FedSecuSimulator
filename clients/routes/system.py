@@ -33,7 +33,10 @@ def status():
     round_context = state.global_model.get("round_context", {})
     available = (
         state.available
-        and bool(state.dataset_range.get("ranges"))
+        and bool(
+            state.dataset_range.get("ranges")
+            or state.dataset_range.get("indices_by_file")
+        )
         and not state.training_lock.locked()
     )
     return jsonify(
@@ -58,13 +61,20 @@ def availability():
     app = current_app._get_current_object()
     available = app.extensions["client_state"].available
     state = app.extensions["client_state"]
-    available = available and bool(state.dataset_range.get("ranges")) and not state.training_lock.locked()
+    available = (
+        available
+        and bool(
+            state.dataset_range.get("ranges")
+            or state.dataset_range.get("indices_by_file")
+        )
+        and not state.training_lock.locked()
+    )
     payload = request.get_json(silent=True) or {}
     return jsonify(
         client_id=app.config["CLIENT_ID"],
         round=payload.get("round"),
         available=bool(available),
-        num_samples=sum(item["end"] - item["start"] for item in state.dataset_range.get("ranges", [])),
+        num_samples=count_dataset_samples(state.dataset_range),
     )
 
 

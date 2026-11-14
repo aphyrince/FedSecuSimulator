@@ -48,9 +48,26 @@ def compare_accuracy_results(normal: dict, attacked: dict) -> dict:
                      "attack_applied": attack.get("attack_applied", False),
                      "normal_defense": baseline.get("defense", "none") if baseline.get("defense_enabled") else "none",
                      "attack_defense": attack.get("defense", "none") if attack.get("defense_enabled") else "none"})
-    return {"normal_experiment_id": normal.get("config", {}).get("experiment_id"),
-            "attack_experiment_id": attacked.get("config", {}).get("experiment_id"),
-            "rounds": rows, "final": rows[-1], "accuracy_unit": "fraction_0_to_1"}
+    report = {"normal_experiment_id": normal.get("config", {}).get("experiment_id"),
+              "attack_experiment_id": attacked.get("config", {}).get("experiment_id"),
+              "rounds": rows, "final": rows[-1], "accuracy_unit": "fraction_0_to_1"}
+    normal_test, attack_test = normal.get("final_test"), attacked.get("final_test")
+    if normal_test is not None or attack_test is not None:
+        if (not normal_test or not attack_test
+                or any(record.get("split") != "test" or record.get("round") != rows[-1]["round"]
+                       for record in (normal_test, attack_test))
+                or not normal_test.get("dataset_fingerprint")
+                or normal_test["dataset_fingerprint"] != attack_test.get("dataset_fingerprint")
+                or normal_test.get("num_test_samples", 0) <= 0
+                or normal_test["num_test_samples"] != attack_test.get("num_test_samples")):
+            raise ValueError("Expected matching final test datasets for both experiments")
+        normal_accuracy = finite_number(normal_test["accuracy"], "final test accuracy")
+        attack_accuracy = finite_number(attack_test["accuracy"], "final test accuracy")
+        if not 0 <= normal_accuracy <= 1 or not 0 <= attack_accuracy <= 1:
+            raise ValueError("Accuracy must be in [0, 1]")
+        report["final_test"] = {"normal_accuracy": normal_accuracy, "attack_accuracy": attack_accuracy,
+                                "accuracy_drop_percentage_points": (normal_accuracy - attack_accuracy) * 100}
+    return report
 
 
 def main():

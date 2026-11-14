@@ -67,11 +67,67 @@ Python 함수는 결과를 반환하고 파일 저장은 CLI가 맡습니다. �
 독립 복사본으로 시작합니다. 데이터 배정과 설정도 같게 유지합니다.
 `common`의 기존 import 경로는 호환용으로 유지하므로 팀원의 호출 경로를 바꿀 필요는 없습니다.
 
+### 독립 모델 실험 E01~E37
+
+E01은 ResNet-18로 학습·검증과 체크포인트 저장을 확인하는 1라운드 설정입니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_model_trials --config configs/e01_resnet18.json --dry-run
+```
+
+E02~E05는 연합학습 50라운드, 로컬 1에포크, 배치 32, 시드 42로 학습 45,000장과 검증 5,000장을 사용합니다. E02는 SmallCNN 기준 설정(학습률 0.001, 모멘텀 0)이고, E03~E05는 SmallCNN·4층 CNN·ResNet-18을 학습률 0.03, 모멘텀 0.9로 비교합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_model_trials --config configs/e02_smallcnn_baseline.json --config configs/e03_smallcnn.json --config configs/e04_cnn4.json --config configs/e05_resnet18.json --dry-run
+```
+
+실제 학습은 `--dry-run`을 빼고 실행합니다. 결과는 `results/standalone/<실험 ID>/normal/`에 저장됩니다.
+
+E06~E13은 지정한 두 모델의 학습률 `0.01`, `0.02`, `0.05`, `0.10`을 비교합니다. 첫 모델은 E06~E09, 두 번째 모델은 E10~E13에 배정합니다. 나머지 조건은 선택한 E03~E05 설정에서 가져옵니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_learning_rate_trials --models E03 E04 --dry-run
+```
+
+예시의 `E03 E04`를 비교할 모델에 맞게 바꿉니다. `--trial E06`을 붙이면 한 실험만 선택할 수 있습니다.
+
+E14~E17은 선택한 모델과 학습률을 고정하고 마지막 분류층 직전에 드롭아웃 `0.1`, `0.2`, `0.3`, `0.4`를 각각 적용합니다. 기준선 `p=0`은 선택한 학습률 실험의 검증 결과를 사용합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_dropout_trials --base-config configs/e03_smallcnn.json --learning-rate 0.02 --dry-run
+```
+
+학습률 실험을 완료했다면 `--base-config`에 해당 결과 폴더의 `config.json`을 넘겨 모델·학습률·데이터 배정을 그대로 가져옵니다. `--trial E14`로 하나를 선택하고, `--dry-run`을 빼면 학습합니다.
+
+### E18~E37 실행
+
+각 단계의 검증 결과로 설정을 고른 뒤 다음 명령의 `--base-config`에 선택한 결과 폴더의 `config.json`을 지정합니다. 경로는 실제로 선택한 결과에 맞춰 바꿉니다.
+
+| 실험 | 실행 모듈 | 비교 조건 |
+| --- | --- | --- |
+| E18~E22 | `experiments.run_augmentation_trials` | 좌우 반전, 랜덤 크롭, 반전+크롭, 반전+크롭+ColorJitter, 반전+크롭+Cutout |
+| E23~E26 | `experiments.run_training_schedule_trials` | 라운드×로컬 에포크 `30×1`, `65×1`, `80×1`, `40×2` |
+| E27~E28 | `experiments.run_optimizer_trials` | Adam(학습률 0.001)과 드롭아웃 차순위 후보를 각각 재검증 |
+| E29~E37 | `experiments.run_final_trials` | 기준 SmallCNN, 최종 후보, 공격 비교를 각각 시드 `101`, `202`, `303`으로 실행 |
+
+```powershell
+$python = '.\.venv\Scripts\python.exe'
+& $python -m experiments.run_augmentation_trials --base-config $chosenDropoutConfig --dry-run
+& $python -m experiments.run_training_schedule_trials --base-config $chosenAugmentationConfig --dry-run
+& $python -m experiments.run_optimizer_trials --base-config $chosenScheduleConfig --trial E27 --dry-run
+& $python -m experiments.run_optimizer_trials --base-config $chosenScheduleConfig --dropout-base-config $chosenOptimizerConfig --runner-up-dropout 0.2 --trial E28 --dry-run
+& $python -m experiments.run_final_trials --base-config $chosenFinalConfig --dry-run
+```
+
+위 `$chosen...Config` 변수에는 각 단계에서 저장된 `config.json` 경로를 넣습니다. `0.2`는 E28의 예시이므로 실제 차순위 값으로 바꿉니다. 모든 명령에서 `--dry-run`으로 설정을 확인하고 `--trial E번호`로 실행을 한 건씩 선택할 수 있습니다.
+
+E29~E31은 E02 기준 설정을 사용합니다. E32~E34와 E35~E37은 각각 같은 시드로 짝을 이루며 최종 후보의 모델과 학습 조건을 공유합니다. 공격 비교는 기준 설정에 지정된 클라이언트와 배율을 사용하며, 비어 있는 클라이언트 목록에는 기본 ID `0`, `1`을 사용합니다. 각 라운드는 검증 5,000장으로, 학습을 마친 모델은 공식 테스트 10,000장으로 평가합니다. 마지막 테스트는 `normal/results.json` 또는 `attack/results.json`의 `final_test`에 저장됩니다.
+
 ## 현재 master의 실제 학습 구현
 
 1번 담당의 CNN·로컬 학습·FedAvg·실제 분류 평가·내부자 협력 공격을 현재 서버/클라이언트에 연결했습니다.
 모델과 업데이트는 기존 JSON API 키를 유지하며, `weights`/`update.values`에 파라미터별 중첩 실수 배열을 넣습니다.
-토치 모델 구조와 전처리는 `fedsec/model.py`에서 정의하고 `common/model.py`가 REST 형식으로 연결합니다. torchvision은 사용하지 않습니다.
+모델 구조와 전처리는 `fedsec/model.py`에서 정의하고 `common/model.py`가 REST 형식으로 연결합니다. 독립 실험의 ResNet-18과 데이터 증강에 torchvision을 사용합니다.
 
 | 파일/함수 | 역할 |
 | --- | --- |

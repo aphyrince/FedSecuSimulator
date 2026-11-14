@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from functools import wraps
@@ -13,7 +14,13 @@ from flask import Blueprint, current_app, jsonify, request
 from server.services.fedavg import aggregate_coordinate_median, aggregate_fedavg
 from server.services.model_evaluation import evaluate_global_model
 from server.services.byzantine_defense import apply_norm_clipping
-from common.model import decode_weights, weights_norm, save_model_checkpoint, positive_int
+from common.model import (
+    decode_weights,
+    positive_int,
+    save_model_checkpoint,
+    weights_hash,
+    weights_norm,
+)
 from common.updates import update_delta, validate_updates
 from common.training import TrainingSettings
 
@@ -41,49 +48,76 @@ def one_round_at_a_time(function):
 def receive_client_update(round_id: int):
     """클라이언트가 제출한 라운드 업데이트를 검증해 라운드별로 저장한다."""
     payload = request.get_json(silent=True) or {}
+    statuses = current_app.extensions.setdefault("update_submission_status", {})
+    round_status = statuses.setdefault(round_id, {})
+    attempts = current_app.extensions.setdefault("update_submission_attempts", {})
+    round_attempts = attempts.setdefault(round_id, [])
+
+    def reject(reason: str, status_code: int):
+        client_id = payload.get("client_id")
+        now = datetime.now(timezone.utc).isoformat()
+        round_attempts.append({
+            "client_id": client_id,
+            "status": "rejected",
+            "reason": reason,
+            "timestamp": now,
+        })
+        if type(client_id) is int and client_id >= 0:
+            if round_status.get(client_id, {}).get("status") != "received":
+                round_status[client_id] = {
+                    "status": "rejected",
+                    "reason": reason,
+                    "rejected_at": now,
+                }
+        return jsonify(error=reason), status_code
+
     if round_id in current_app.extensions.get("completed_rounds", set()):
-        return jsonify(error="Round is already completed"), 409
+        return reject("Round is already completed", 409)
     deadline = current_app.extensions.get("update_deadlines", {}).get(round_id)
     if deadline and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline):
-        return jsonify(error="Submission deadline expired"), 408
+        return reject("Submission deadline expired", 408)
     try:
         positive_int(payload.get("round"), "round")
         positive_int(payload.get("client_id"), "client_id", 0)
     except ValueError as error:
-        return jsonify(error=str(error)), 400
+        return reject(str(error), 400)
     if payload.get("round", round_id) != round_id:
-        return jsonify(error="Round number mismatch"), 400
+        return reject("Round number mismatch", 400)
     client_id = payload.get("client_id")
     if client_id is None or not payload.get("valid", False):
-        return jsonify(error="Invalid client update"), 400
+        return reject("Invalid client update", 400)
     selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
     if int(client_id) not in selected:
-        return jsonify(error="Client was not selected for this round"), 403
+        return reject("Client was not selected for this round", 403)
     num_samples = payload.get("num_samples")
     if not isinstance(num_samples, (int, float)) or num_samples < 0:
-        return jsonify(error="num_samples must be a non-negative number"), 400
+        return reject("num_samples must be a non-negative number", 400)
     if "update" not in payload or not isinstance(payload["update"], dict):
-        return jsonify(error="Invalid update payload"), 400
+        return reject("Invalid update payload", 400)
     try:
         update_delta(current_app.extensions["global_model"], payload)
         expected = current_app.extensions.get("expected_sample_counts", {}).get(round_id, {}).get(int(client_id))
         if expected is not None and num_samples != expected:
             raise ValueError("Submitted sample count does not match assigned data")
     except (ValueError, KeyError, TypeError) as error:
-        return jsonify(error=str(error)), 400
+        return reject(str(error), 400)
 
     updates = current_app.extensions.setdefault("round_updates", {})
     round_updates = updates.setdefault(round_id, {})
     if int(client_id) in round_updates:
-        return jsonify(error="Duplicate client update"), 409
+        return reject("Duplicate client update", 409)
     round_updates[int(client_id)] = payload
-    statuses = current_app.extensions.setdefault("update_submission_status", {})
-    round_status = statuses.setdefault(round_id, {})
     round_status[int(client_id)] = {
         "status": "received",
         "num_samples": num_samples,
         "received_at": datetime.now(timezone.utc).isoformat(),
     }
+    round_attempts.append({
+        "client_id": int(client_id),
+        "status": "received",
+        "num_samples": num_samples,
+        "timestamp": round_status[int(client_id)]["received_at"],
+    })
     return jsonify(
         status="received",
         round=round_id,
@@ -209,11 +243,34 @@ def start_round(round_id: int):
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
     config["round"] = round_id
+    progress = current_app.extensions.setdefault(
+        "round_progress", {"round": None, "phase": "idle"}
+    )
+    progress.update(
+        round=round_id,
+        phase="checking_availability",
+        message="클라이언트 참여 가능 여부를 확인하고 있습니다.",
+        config={
+            key: config.get(key)
+            for key in (
+                "participation_rate",
+                "attack_enabled",
+                "malicious_clients",
+                "delay_clients",
+                "defense_enabled",
+                "defense",
+                "max_train_samples",
+            )
+        },
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
     if not current_app.extensions.get("dataset_range", {}).get("ranges"):
+        progress.update(phase="failed", message="테스트 데이터가 분배되지 않았습니다.")
         return jsonify(error="Distribute the test dataset before starting"), 409
 
     registered = list(current_app.extensions.get("clients", {}).values())
     if not registered:
+        progress.update(phase="failed", message="등록된 클라이언트가 없습니다.")
         return jsonify(error="No registered clients"), 409
 
     availability_responses = []
@@ -231,6 +288,7 @@ def start_round(round_id: int):
                 "available": False,
                 "reason": "availability_request_failed",
             }
+        response["checked_at"] = datetime.now(timezone.utc).isoformat()
         availability_responses.append(response)
         if response.get("available", False):
             available_clients.append(client)
@@ -241,11 +299,25 @@ def start_round(round_id: int):
     ]
 
     if not available_clients:
-        return jsonify(error="No available clients"), 409
+        current_app.extensions["selected_clients"][round_id] = []
+        current_app.extensions["round_updates"][round_id] = {}
+        current_app.extensions["update_submission_status"][round_id] = {}
+        current_app.extensions["update_submission_attempts"][round_id] = []
+        progress.update(phase="aggregating", message="참여 가능한 클라이언트가 없어 모델을 유지합니다.")
+        return execute_result(
+            round_id,
+            {
+                **config,
+                "selected_clients": [],
+                "updates": [],
+                "experiment_manager_url": config.get("experiment_manager_url"),
+            },
+        )
 
     # 이전 라운드 제출이 재사용되지 않도록 시작 시 해당 라운드 업데이트를 초기화한다.
     current_app.extensions.setdefault("round_updates", {})[round_id] = {}
     current_app.extensions.setdefault("update_submission_status", {})[round_id] = {}
+    current_app.extensions.setdefault("update_submission_attempts", {})[round_id] = []
 
     seed = config.get("seed", 42)
     participation = config.get("participation_rate", 0.5)
@@ -265,6 +337,19 @@ def start_round(round_id: int):
         client_id: {"status": "waiting"}
         for client_id in selected_ids
     }
+    attack_enabled = bool(config.get("attack_enabled", False))
+    malicious_ids = set(config.get("malicious_clients", []))
+    delay_ids = set(config.get("delay_clients", []))
+    progress.update(
+        phase="training",
+        message="선정된 클라이언트가 로컬 학습을 진행하고 있습니다.",
+        available_clients=current_app.extensions["available_clients"][round_id],
+        selected_clients=selected_ids,
+        malicious_clients=sorted(malicious_ids.intersection(selected_ids))
+        if attack_enabled
+        else [],
+        delayed_clients=sorted(delay_ids.intersection(selected_ids)),
+    )
 
     timeout_seconds = float(
         config.get("round_timeout", config.get("update_timeout", 900.0))
@@ -313,63 +398,60 @@ def start_round(round_id: int):
     global_model = current_app.extensions.get("global_model")
     if global_model is None:
         return jsonify(error="Global model is not initialized"), 409
-    for client in selected_clients:
-        try:
-            _post_json(
-                f"{client['url']}/api/model/global",
-                {**global_model, "round": round_id, "training_config": {**TrainingSettings.from_dict(config).to_dict(), "seed": seed},
-                 "update_deadline": deadline.isoformat()},
-                timeout=max(0.001, (deadline - datetime.now(timezone.utc)).total_seconds()),
-            )
-        except (OSError, ValueError):
-            current_app.logger.warning(
-                "Global model delivery failed: client_id=%s", client["client_id"]
-            )
 
-    delay_ids = set(config.get("delay_clients", []))
+    training_config = {
+        **TrainingSettings.from_dict(config).to_dict(),
+        "seed": seed,
+    }
+    server_url = config.get(
+        "server_url",
+        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+    )
+
+    def deliver_global_model(client):
+        client_id = client["client_id"]
+        round_context = {
+            "selected": True,
+            "malicious": attack_enabled and client_id in malicious_ids,
+            "delayed": client_id in delay_ids,
+        }
+        return _post_json(
+            f"{client['url']}/api/model/global",
+            {
+                **global_model,
+                "round": round_id,
+                "training_config": training_config,
+                "update_deadline": deadline.isoformat(),
+                "round_context": round_context,
+            },
+            timeout=max(
+                0.001, (deadline - datetime.now(timezone.utc)).total_seconds()
+            ),
+        )
+
     accepted_clients = [
         client for client in selected_clients if client["client_id"] not in delay_ids
     ]
-    malicious_ids = set(config.get("malicious_clients", []))
 
-    updates = []
-    malicious_local_updates = {}
-    attack_enabled = bool(config.get("attack_enabled", False))
+    def record_exclusion(client_id: int, reason: str):
+        status = current_app.extensions["update_submission_status"][round_id]
+        if status.get(client_id, {}).get("status") in {None, "waiting"}:
+            status[client_id] = {
+                "status": "excluded",
+                "reason": reason,
+                "excluded_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-    for client in accepted_clients:
-        try:
-            is_malicious = attack_enabled and client["client_id"] in malicious_ids
-            local_response = _post_json(
-                f"{client['url']}/api/round/execute",
-                {
-                    "round": round_id,
-                    "malicious": is_malicious,
-                    "attack_enabled": attack_enabled,
-                },
-            )
-            if is_malicious:
-                malicious_local_updates[client["client_id"]] = local_response
-                continue
-            _post_json(
-                f"{client['url']}/api/round/submit",
-                {
-                    "round": round_id,
-                    "malicious": False,
-                    "attack_enabled": attack_enabled,
-                    "server_url": config.get(
-                        "server_url",
-                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-                    ),
-                },
-            )
-        except (OSError, ValueError):
-            current_app.logger.warning(
-                "Client update generation failed: client_id=%s",
-                client["client_id"],
-            )
+    for client in selected_clients:
+        if client["client_id"] in delay_ids:
+            current_app.extensions["update_submission_status"][round_id][client["client_id"]] = {
+                "status": "excluded",
+                "reason": "configured_delay",
+                "excluded_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-    # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
-    if attack_enabled:
+    def submit_colluded_updates(malicious_local_updates):
+        # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
         for client in accepted_clients:
             sender_id = client["client_id"]
             if sender_id not in malicious_local_updates:
@@ -394,50 +476,102 @@ def start_round(round_id: int):
                         peer_id,
                     )
 
-    # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+        # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+        for client in accepted_clients:
+            client_id = client["client_id"]
+            if client_id not in malicious_local_updates:
+                continue
+            peer_updates = [
+                peer_update
+                for peer_id, peer_update in malicious_local_updates.items()
+                if peer_id != client_id
+            ]
+            try:
+                colluded_update = _post_json(
+                    f"{client['url']}/api/round/collusion",
+                    {
+                        "round": round_id,
+                        "own_update": malicious_local_updates[client_id],
+                        "peer_updates": peer_updates,
+                    },
+                )
+                _post_json(
+                    f"{client['url']}/api/round/submit",
+                    {
+                        "round": round_id,
+                        "malicious": True,
+                        "attack_enabled": attack_enabled,
+                        "colluded_update": colluded_update,
+                        "server_url": server_url,
+                    },
+                )
+            except (OSError, ValueError):
+                record_exclusion(client_id, "collusion_update_failed")
+                current_app.logger.warning(
+                    "Malicious collusion failed: client_id=%s", client_id
+                )
+
+    with ThreadPoolExecutor(max_workers=len(selected_clients)) as executor:
+        deliveries = {
+            executor.submit(deliver_global_model, client): client
+            for client in selected_clients
+        }
+        for future in as_completed(deliveries):
+            client = deliveries[future]
+            try:
+                future.result()
+            except (OSError, ValueError):
+                current_app.logger.warning(
+                    "Global model delivery failed: client_id=%s",
+                    client["client_id"],
+                )
+
+    malicious_local_updates = {}
     for client in accepted_clients:
         client_id = client["client_id"]
-        if client_id not in malicious_local_updates:
-            continue
-        peer_updates = [
-            peer_update
-            for peer_id, peer_update in malicious_local_updates.items()
-            if peer_id != client_id
-        ]
+        is_malicious = attack_enabled and client_id in malicious_ids
         try:
-            colluded_update = _post_json(
-                f"{client['url']}/api/round/collusion",
+            local_response = _post_json(
+                f"{client['url']}/api/round/execute",
                 {
                     "round": round_id,
-                    "own_update": malicious_local_updates[client_id],
-                    "peer_updates": peer_updates,
-                    "attack_scale": config.get("attack_scale", -5.0),
+                    "malicious": is_malicious,
+                    "attack_enabled": attack_enabled,
                 },
             )
+        except (OSError, ValueError):
+            record_exclusion(client_id, "update_generation_failed")
+            current_app.logger.warning(
+                "Client update generation failed: client_id=%s", client_id
+            )
+            continue
+
+        if is_malicious:
+            malicious_local_updates[client_id] = local_response
+            continue
+
+        try:
             _post_json(
                 f"{client['url']}/api/round/submit",
                 {
                     "round": round_id,
-                    "malicious": True,
+                    "malicious": False,
                     "attack_enabled": attack_enabled,
-                    "colluded_update": colluded_update,
-                    "server_url": config.get(
-                        "server_url",
-                        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-                    ),
+                    "server_url": server_url,
                 },
             )
         except (OSError, ValueError):
+            record_exclusion(client_id, "update_submission_failed")
             current_app.logger.warning(
-                "Malicious collusion failed: client_id=%s", client_id
+                "Client update submission failed: client_id=%s", client_id
             )
+
+    if attack_enabled:
+        submit_colluded_updates(malicious_local_updates)
 
     received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
     updates = list(received_response.values())
-    if not updates:
-        timer.cancel()
-        return jsonify(error="No client updates received"), 409
-
+    progress.update(phase="aggregating", message="업데이트를 집계하고 모델을 평가하고 있습니다.")
     result_payload = {
         **config,
         "selected_clients": selected_ids,
@@ -458,33 +592,235 @@ def execute_result(round_id: int, payload: dict):
     updates = [item for item in payload.get("updates", []) if item.get("valid") is True]
     defense_enabled = bool(payload.get("defense_enabled", payload.get("defense", "none") != "none"))
     defense_type = payload.get("defense", "none")
+    progress = current_app.extensions.setdefault(
+        "round_progress", {"round": round_id, "phase": "idle"}
+    )
+    progress.update(round=round_id, phase="aggregating", message="업데이트를 집계하고 있습니다.")
     try:
         if initial is None:
             raise ValueError("Configure the round before execution")
-        validate_updates(initial, updates)
         selected_ids = payload.get("selected_clients", [])
         if any(item["round"] != round_id or item["client_id"] not in selected_ids for item in updates):
             raise ValueError("Update round or participation mismatch")
         experiment_id = initial["experiment_id"]
         if payload.get("experiment_id") != experiment_id:
             raise ValueError("Experiment identity mismatch")
+        if updates:
+            validate_updates(initial, updates)
+        root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
+        experiment_dir = root / experiment_id
+        if not experiment_dir.resolve().is_relative_to(root.resolve()):
+            return jsonify(error="Invalid experiment result path"), 400
+        start_checkpoint = experiment_dir / "checkpoints" / f"round_{round_id:04d}_start.pt"
+        save_model_checkpoint(initial, start_checkpoint)
+
+        status_by_client = current_app.extensions.get("update_submission_status", {}).get(round_id, {})
+        accepted_ids = sorted(item["client_id"] for item in updates)
+        available_ids = current_app.extensions.get("available_clients", {}).get(round_id, [])
+        availability = {
+            item.get("client_id"): item
+            for item in current_app.extensions.get("availability_responses", {}).get(round_id, [])
+        }
+        received_by_client = {item["client_id"]: item for item in updates}
+        closed_at = datetime.now(timezone.utc).isoformat()
+        client_activity = []
+        for client_id in sorted(
+            set(available_ids) | set(selected_ids) | set(status_by_client) | set(availability)
+        ):
+            submission = status_by_client.get(client_id, {})
+            update = received_by_client.get(client_id, {})
+            is_accepted = client_id in accepted_ids
+            if is_accepted:
+                status, reason = "accepted", None
+            elif submission.get("status") == "rejected":
+                status, reason = "excluded", submission.get("reason", "update_rejected")
+            elif submission.get("status") == "excluded":
+                status, reason = "excluded", submission.get("reason", "excluded")
+            elif submission.get("status") == "expired":
+                status, reason = "excluded", "submission_timeout"
+            elif client_id not in available_ids:
+                status, reason = "excluded", availability.get(client_id, {}).get("reason", "unavailable")
+            elif client_id not in selected_ids:
+                status, reason = "excluded", "not_selected"
+            else:
+                status, reason = "excluded", "no_update_received"
+            client_activity.append({
+                "client_id": client_id,
+                "status": status,
+                "reason": reason,
+                "malicious": bool(payload.get("attack_enabled")) and client_id in payload.get("malicious_clients", []),
+                "num_samples": update.get(
+                    "num_samples",
+                    submission.get(
+                        "num_samples", availability.get(client_id, {}).get("num_samples")
+                    ),
+                ),
+                "training_accuracy": update.get("training_accuracy"),
+                "training_started_at": update.get("training_started_at"),
+                "training_completed_at": update.get("training_completed_at"),
+                "training_duration_seconds": update.get("training_duration_seconds"),
+                "received_at": submission.get("received_at"),
+                "excluded_at": (
+                    submission.get("rejected_at")
+                    or submission.get("expired_at")
+                    or submission.get("excluded_at")
+                    or availability.get(client_id, {}).get("checked_at")
+                    or (None if is_accepted else closed_at)
+                ),
+                "update_norm_before_defense": update.get("update", {}).get("norm_before_defense", update.get("update", {}).get("update_norm")),
+                "update_norm_after_defense": update.get("update", {}).get("norm_after_defense"),
+            })
+
+        malicious_ids = payload.get("malicious_clients", [])
+        malicious_selected = sorted(set(selected_ids) & set(malicious_ids))
+        malicious_accepted = sorted(set(accepted_ids) & set(malicious_ids))
+        population_size = max(1, int(payload.get("nums_clients", len(available_ids) or len(selected_ids))))
+        malicious_ratio = len(set(malicious_ids)) / population_size
+        accepted_malicious_ratio = (
+            len(malicious_accepted) / len(accepted_ids) if accepted_ids else "N/A"
+        )
+        common_result = {
+            "experiment_id": experiment_id,
+            "round": round_id,
+            "model_version": initial["model_version"],
+            "selected_clients": selected_ids,
+            "accepted_clients": accepted_ids,
+            "available_clients": available_ids,
+            "malicious_clients": malicious_ids,
+            "malicious_selected": malicious_selected,
+            "malicious_accepted": malicious_accepted,
+            "malicious_ratio": malicious_ratio,
+            "accepted_malicious_ratio": accepted_malicious_ratio,
+            "client_activity": client_activity,
+            "submission_attempts": current_app.extensions.get(
+                "update_submission_attempts", {}
+            ).get(round_id, []),
+            "attack_enabled": bool(payload.get("attack_enabled", False)),
+            "attack_type": "insider_collusion" if payload.get("attack_enabled") else None,
+            "defense": payload.get("defense", "none"),
+            "defense_enabled": defense_enabled,
+            "defense_type": payload.get("defense") if defense_enabled else None,
+            "training_config": TrainingSettings.from_dict(payload).to_dict(),
+            "initial_model_hash": initial["initial_model_hash"],
+            "start_model_hash": weights_hash(initial["weights"]),
+            "start_checkpoint": str(start_checkpoint),
+            "round_config": {
+                key: value
+                for key, value in payload.items()
+                if key not in {"updates", "initial_global_model"}
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if len(accepted_ids) < 3:
+            progress.update(phase="evaluating", message="채택 업데이트가 3개 미만이어서 모델을 갱신하지 않습니다.")
+            evaluation_error = None
+            try:
+                evaluation = evaluate_global_model(
+                    initial,
+                    current_app.extensions.get("dataset_range", {}),
+                    payload,
+                    round_id,
+                )
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+                evaluation = None
+                evaluation_error = str(error)
+            result = {
+                **common_result,
+                "accuracy": evaluation["accuracy"] if evaluation else None,
+                "loss": evaluation["loss"] if evaluation else None,
+                "evaluation": evaluation,
+                "evaluation_error": evaluation_error,
+                "training_datasets": {
+                    str(item["client_id"]): {
+                        "fingerprint": item.get("dataset_fingerprint"),
+                        "num_samples": item["num_samples"],
+                    }
+                    for item in updates
+                },
+                "global_model_version": initial["model_version"],
+                "global_model": {
+                    key: value for key, value in initial.items() if key != "weights"
+                } | {"checkpoint": str(start_checkpoint)},
+                "model_updated": False,
+                "aggregated_delta": 0.0,
+                "defense_aggregate_norm": 0.0,
+                "fedavg_samples": sum(item["num_samples"] for item in updates),
+                "client_updates": [
+                    {
+                        **{
+                            key: value
+                            for key, value in item.items()
+                            if key not in {"local_model", "update"}
+                        },
+                        "update": {
+                            key: value
+                            for key, value in item.get("update", {}).items()
+                            if key != "values"
+                        },
+                    }
+                    for item in updates
+                ],
+                "delayed_clients": payload.get("delay_clients", []),
+                "clip_norm": payload.get("clip_norm", 1.0),
+                "attack_scale": payload.get("attack_scale", -5.0),
+                "reason": "insufficient_accepted_updates",
+            }
+            if evaluation is not None:
+                current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
+            current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
+            current_app.extensions["round_results"].append(result)
+            progress.update(
+                phase="completed",
+                message=(
+                    "3개 미만의 업데이트로 모델을 갱신하지 않았습니다."
+                    if evaluation is not None
+                    else f"모델을 갱신하지 않았으며 정확도 평가에 실패했습니다: {evaluation_error}"
+                ),
+            )
+            callback_url = payload.get("experiment_manager_url")
+            if callback_url:
+                try:
+                    _post_json(callback_url.rstrip("/") + "/api/results/round", result, timeout=30.0)
+                except (OSError, ValueError, URLError):
+                    current_app.logger.warning("Result callback failed: round=%s", round_id)
+            return jsonify(result)
+
+        for item in updates:
+            item.setdefault("update", {})["norm_before_defense"] = weights_norm(update_delta(initial, item))
         if defense_enabled and defense_type == "norm_clipping":
             updates = apply_norm_clipping(updates, payload.get("clip_norm", 1.0), global_model=initial)
         elif defense_enabled and defense_type != "coordinate_median":
             raise ValueError("Unsupported defense")
+        for item in updates:
+            item.setdefault("update", {})["norm_after_defense"] = (
+                weights_norm(update_delta(initial, item))
+                if defense_enabled and defense_type == "norm_clipping"
+                else None
+                if defense_enabled and defense_type == "coordinate_median"
+                else item["update"].get("norm_before_defense")
+            )
+        activity_by_client = {
+            entry["client_id"]: entry for entry in client_activity
+        }
+        for item in updates:
+            activity = activity_by_client[item["client_id"]]
+            activity.update(
+                update_norm_before_attack=item["update"].get("norm_before_attack"),
+                update_norm_after_attack=item["update"].get("norm_after_attack"),
+                update_norm_before_defense=item["update"].get("norm_before_defense"),
+                update_norm_after_defense=item["update"].get("norm_after_defense"),
+            )
         aggregate = aggregate_coordinate_median if defense_enabled and defense_type == "coordinate_median" else aggregate_fedavg
         aggregated = aggregate(initial, updates)
         updated = aggregated["global_model"]
+        progress.update(phase="evaluating", message="전역 모델을 평가하고 있습니다.")
         evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), payload, round_id)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+        progress.update(phase="failed", message=str(error))
         return jsonify(error=str(error), status="failed", round=round_id), 400
 
     # 텐서 원본은 디스크에 한 번 저장하고 HTTP 응답과 화면 로그에는 요약만 남긴다.
     import torch
-    root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
-    experiment_dir = root / experiment_id
-    if not experiment_dir.resolve().is_relative_to(root.resolve()):
-        return jsonify(error="Invalid experiment result path"), 400
     checkpoint = experiment_dir / "checkpoints" / f"global_{updated['model_version']:04d}.pt"
     save_model_checkpoint(updated, checkpoint)
     for item in updates:
@@ -497,23 +833,16 @@ def execute_result(round_id: int, payload: dict):
     delta_norm = weights_norm({key: updated_state[key] - initial_state[key] for key in initial_state})
     model_summary = {key: value for key, value in updated.items() if key != "weights"}
     model_summary["checkpoint"] = str(checkpoint)
-    accepted_ids = [item["client_id"] for item in updates]
-    malicious_ids = payload.get("malicious_clients", [])
     result = {
-        "experiment_id": experiment_id, "round": round_id, "model_version": updated["model_version"],
+        **common_result,
+        "model_version": updated["model_version"],
         "selected_clients": selected_ids, "accepted_clients": accepted_ids,
-        "delayed_clients": payload.get("delay_clients", []), "malicious_clients": malicious_ids,
-        "malicious_selected": sorted(set(selected_ids) & set(malicious_ids)),
-        "malicious_accepted": sorted(set(accepted_ids) & set(malicious_ids)),
-        "available_clients": current_app.extensions.get("available_clients", {}).get(round_id, []),
-        "attack_enabled": bool(payload.get("attack_enabled", False)),
-        "attack_type": "insider_collusion" if payload.get("attack_enabled") else None,
+        "delayed_clients": payload.get("delay_clients", []),
         "attack_applied": any(item["update"].get("attack_applied", False) for item in updates),
-        "defense": defense_type, "defense_enabled": defense_enabled,
-        "defense_type": defense_type if defense_enabled else None,
         "clip_norm": payload.get("clip_norm", 1.0), "attack_scale": payload.get("attack_scale", -5.0),
         "accuracy": evaluation["accuracy"], "loss": evaluation["loss"],
-        "aggregated_delta": delta_norm, "global_model_version": updated["model_version"],
+        "aggregated_delta": delta_norm, "defense_aggregate_norm": delta_norm,
+        "global_model_version": updated["model_version"],
         "initial_model_hash": initial["initial_model_hash"],
         "training_config": TrainingSettings.from_dict(payload).to_dict(),
         "training_datasets": {str(item["client_id"]): {"fingerprint": item.get("dataset_fingerprint"), "num_samples": item["num_samples"]} for item in updates},
@@ -521,7 +850,8 @@ def execute_result(round_id: int, payload: dict):
         "global_model": model_summary, "evaluation": evaluation,
         "client_updates": [{key: value for key, value in item.items() if key not in ("local_model", "update")} |
                            {"update": {key: value for key, value in item["update"].items() if key != "values"}} for item in updates],
-        "reason": "model_updated", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_updated": True,
+        "reason": "model_updated",
     }
     current_app.extensions["global_model"] = updated
     current_app.extensions.setdefault("global_model_history", []).append({
@@ -531,6 +861,7 @@ def execute_result(round_id: int, payload: dict):
     current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
     current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
     current_app.extensions["round_results"].append(result)
+    progress.update(phase="completed", message="라운드 집계와 평가가 완료되었습니다.")
     callback_url = payload.get("experiment_manager_url")
     if callback_url:
         try:

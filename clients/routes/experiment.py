@@ -6,7 +6,7 @@ from clients.services.dlg_service import add_gaussian_noise, compute_single_imag
 from clients.services.dlg_data_loader import load_image, load_label
 from pathlib import Path
 from clients.services.collusion import collude_updates
-from common.model import MODEL_FORMAT
+from common.model import MODEL_FORMAT, finite_number
 
 experiment_bp = Blueprint("client_experiment", __name__)
 PROJECT_ROOT_PATH = Path(__file__).resolve().parents[2]
@@ -44,8 +44,10 @@ def receive_global_model():
         state.receive_global_model(payload)
         training_record = run_local_training(state, current_app.config["CLIENT_ID"], payload)
     except TimeoutError as error:
+        state.training_progress.update(status="expired", error=str(error))
         return jsonify(error=str(error)), 408
     except (ValueError, KeyError, TypeError, OSError) as error:
+        state.training_progress.update(status="failed", error=str(error))
         return jsonify(error=str(error)), 400
     finally:
         state.training_lock.release()
@@ -118,8 +120,11 @@ def collude_round_updates():
     try:
         if own_update.get("client_id") != current_app.config["CLIENT_ID"] or own_update.get("round") != round_id:
             raise ValueError("Collusion identity mismatch")
+        attack_scale = state.attack_scale_by_round.get(
+            round_id, payload.get("attack_scale", -5.0)
+        )
         return jsonify(collude_updates(state.global_model, own_update, peer_updates,
-                                        payload.get("attack_scale", -5.0), payload.get("min_colluders", 2)))
+                                        attack_scale, payload.get("min_colluders", 2)))
     except (ValueError, TypeError, KeyError) as error:
         return jsonify(error=str(error)), 400
 
@@ -133,12 +138,17 @@ def receive_malicious_peers():
     if not isinstance(peers, list):
         return jsonify(error="peers must be a list"), 400
     state = current_app.extensions["client_state"]
-    state.set_malicious_peers(round_id, peers)
+    try:
+        attack_scale = finite_number(payload.get("attack_scale", -5.0), "attack_scale")
+        state.set_malicious_peers(round_id, peers, attack_scale)
+    except (ValueError, TypeError) as error:
+        return jsonify(error=str(error)), 400
     return jsonify(
         status="received",
         client_id=current_app.config["CLIENT_ID"],
         round=round_id,
         peers=peers,
+        attack_scale=attack_scale,
     )
 
 
@@ -148,11 +158,37 @@ def start_dlg():
     payload = request.get_json(silent=True) or {}
     if payload.get("global_model", {}).get("architecture") == MODEL_FORMAT:
         from fedsec.data import CifarRangeDataset
+        from fedsec.model import PREPROCESSING
         from security.dlg_api import make_gradient_payload, original_pixels
 
         state = current_app.extensions["client_state"]
         try:
-            sample, label = CifarRangeDataset(state.dataset_range, limit=1)[0]
+            if "dlg_image" in payload:
+                import math
+                import torch
+
+                pixels = payload["dlg_image"]
+                label = payload.get("dlg_label")
+                if (
+                    not isinstance(pixels, list)
+                    or len(pixels) != 3 * 32 * 32
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                        or not 0 <= value <= 1
+                        for value in pixels
+                    )
+                ):
+                    raise ValueError("DLG image must contain 3072 pixels in [0,1]")
+                if type(label) is not int or not 0 <= label <= 9:
+                    raise ValueError("DLG label must be an integer from 0 to 9")
+                image = torch.tensor(pixels, dtype=torch.float32).reshape(3, 32, 32)
+                mean = torch.tensor(PREPROCESSING["mean"]).reshape(3, 1, 1)
+                std = torch.tensor(PREPROCESSING["std"]).reshape(3, 1, 1)
+                sample = (image - mean) / std
+            else:
+                sample, label = CifarRangeDataset(state.dataset_range, limit=1)[0]
             sigma = float(payload.get("noise_sigma", 0.0)) if payload.get("defense_enabled") else 0.0
             gradient = make_gradient_payload(
                 payload["global_model"], sample, label,

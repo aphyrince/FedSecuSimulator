@@ -1,6 +1,6 @@
 from flask import Blueprint, current_app, jsonify, request
 from server.config.model_state import create_random_global_model
-from common.model import model_config, save_model_checkpoint
+from common.model import build_model, model_config, save_model_checkpoint
 from pathlib import Path
 from common.training import TrainingSettings
 import re
@@ -30,22 +30,39 @@ def set_round_config():
     try:
         TrainingSettings.from_dict(payload)
         model_config(payload.get("model_config"))
+        initial_global_model = payload.get("initial_global_model")
+        if initial_global_model is not None:
+            if not isinstance(initial_global_model, dict):
+                raise ValueError("initial_global_model must be an object")
+            build_model(initial_global_model)
+            initial_global_model = {
+                **initial_global_model,
+                "model_version": int(initial_global_model.get("model_version", 0)),
+                "experiment_id": payload.get("experiment_id", "experiment"),
+                "round": 0,
+            }
+            if initial_global_model["model_version"] < 0:
+                raise ValueError("model_version must be nonnegative")
         experiment_id = payload.get("experiment_id", "experiment")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", experiment_id):
             raise ValueError("experiment_id must use letters, numbers, underscores or hyphens")
-    except (TypeError, ValueError) as error:
+    except (RuntimeError, TypeError, ValueError) as error:
         return jsonify(error=str(error)), 400
+    payload.pop("initial_global_model", None)
     current_app.extensions["round_config"] = payload
     previous = current_app.extensions.get("global_model")
     if previous is not None and previous.get("experiment_id") == experiment_id and payload.get("round") != 1 and model_config(payload.get("model_config")) != previous.get("model_config"):
         return jsonify(error="Model architecture cannot change within an experiment"), 400
     if previous is None or previous.get("experiment_id") != experiment_id or payload.get("round") == 1:
-        current_app.extensions["global_model"] = create_random_global_model(
-            seed=payload.get("seed", 42),
-            num_parameters=payload.get("num_parameters", 32),
-            model_config=payload.get("model_config"),
-        )
-        current_app.extensions["global_model"]["experiment_id"] = experiment_id
+        if initial_global_model is not None:
+            current_app.extensions["global_model"] = initial_global_model
+        else:
+            current_app.extensions["global_model"] = create_random_global_model(
+                seed=payload.get("seed", 42),
+                num_parameters=payload.get("num_parameters", 32),
+                model_config=payload.get("model_config"),
+            )
+            current_app.extensions["global_model"]["experiment_id"] = experiment_id
         for key in ("round_updates", "update_submission_status", "evaluation_results", "expected_sample_counts"):
             current_app.extensions[key] = {}
         current_app.extensions["completed_rounds"] = set()

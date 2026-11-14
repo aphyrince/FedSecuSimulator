@@ -6,7 +6,7 @@ experiment_bp = Blueprint("experiment", __name__)
 
 @experiment_bp.get("/api/experiment/config")
 def get_config():
-    return jsonify(current_app.extensions["experiment_manager"].get_config())
+    return jsonify(current_app.extensions["experiment_manager"].get_public_config())
 
 
 @experiment_bp.post("/api/experiment/config")
@@ -14,7 +14,8 @@ def set_config():
     """웹 UI의 실험 옵션을 검증한 뒤 실행 서비스에 저장한다."""
     try:
         manager = current_app.extensions["experiment_manager"]
-        return jsonify(manager.update_config(request.get_json(silent=True) or {}))
+        manager.update_config(request.get_json(silent=True) or {})
+        return jsonify(manager.get_public_config())
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -24,6 +25,37 @@ def start():
     # 가상 라운드 실행을 백그라운드 스레드에서 시작한다.
     try:
         return jsonify(current_app.extensions["experiment_manager"].start())
+    except (RuntimeError, ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
+@experiment_bp.post("/api/experiment/continuous/start")
+def start_continuous():
+    """24개 내부자 협력공격 실험을 순차 실행한다."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify(error="연속 실험 설정은 객체 형식이어야 합니다."), 400
+        cases = payload.get("cases")
+        return jsonify(
+            current_app.extensions["experiment_manager"].start_continuous_experiments(
+                cases
+            )
+        )
+    except (RuntimeError, ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 409
+
+
+@experiment_bp.post("/api/experiment/continuous/dlg/start")
+def start_continuous_dlg():
+    """사용자 체크포인트와 고정 이미지를 사용하는 DLG 3개 실험을 시작한다."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        return jsonify(
+            current_app.extensions[
+                "experiment_manager"
+            ].start_continuous_dlg_experiments(payload)
+        )
     except (RuntimeError, ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 409
 
@@ -43,6 +75,20 @@ def reset():
     try:
         return jsonify(current_app.extensions["experiment_manager"].reset())
     except RuntimeError as exc:
+        return jsonify(error=str(exc)), 409
+
+
+@experiment_bp.post("/api/experiment/replay")
+def replay():
+    """저장된 연합학습 라운드를 설정·데이터·체크포인트 스냅샷으로 재실행한다."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            current_app.extensions["experiment_manager"].replay_round(
+                payload["experiment_id"], payload["round"]
+            )
+        )
+    except (KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
         return jsonify(error=str(exc)), 409
 
 
@@ -85,6 +131,7 @@ def receive_dlg_original():
             experiment_id=payload["experiment_id"],
             client_id=int(payload["client_id"]),
             image=payload["image"],
+            label=payload.get("label"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return jsonify(error=str(exc)), 400

@@ -102,6 +102,8 @@ Python 함수는 결과를 반환하고 파일 저장은 CLI가 맡습니다. �
 7. 정상은 `normal_001`, 공격은 `attack_001`처럼 서로 다른 ID로 저장합니다. 결과가 있는 ID의 재실행은 차단합니다.
 
 웹 화면에서 epoch·배치·학습률·CPU/CUDA·제출 제한 시간·표본 제한을 설정할 수 있습니다.
+내부자 협력 공격을 켜면 공격 설정에 업데이트 배율 입력란이 나타납니다(기본값 `-5`).
+저장한 배율은 실험 관리자가 각 공격 라운드의 악성 클라이언트에 전달합니다.
 전체 표본을 사용할 때는 표본 제한을 비웁니다. 모델 채널/완전연결 크기와 옵티마이저 세부 옵션은
 `POST /api/experiment/config`의 `model_config`, `optimizer`, `momentum`, `weight_decay`로 전달할 수 있습니다.
 기본값은 SGD, lr=0.001, batch=32, local_epochs=2, CPU이며 성능 튜닝으로 확정한 값이 아닙니다.
@@ -148,7 +150,7 @@ print(result["final"])
 ```
 
 두 실험의 원본 결과는 각각 `results/<실험 ID>/`에,
-비교표는 `results/compare_001_comparison.json`에 저장됩니다.
+기존 두 조건 비교표는 `results/compare_001_comparison.json`에 저장됩니다.
 기존 결과를 덮어쓰지 않으므로 다시 실행할 때는 새 ID를 사용하세요.
 실패·중단 시 다음 실험으로 넘어가지 않으며, 조건이 다른 결과는 비교 파일로 저장하지 않습니다.
 Ctrl+C 또는 대기 시간 초과 시 현재 실험에 중단을 요청합니다. 진행 중인 라운드는 바로 끝나지 않을 수 있습니다.
@@ -177,10 +179,39 @@ Ctrl+C 또는 대기 시간 초과 시 현재 실험에 중단을 요청합니�
 기준이 다르거나 예전 가상 평가 결과이면 비교를 거부합니다. 정확도는 0~1, 하락 폭은 비율과 %p로 제공합니다.
 참여자 중 악성이 1개뿐이면 협력 공격을 생략하고 정상 delta를 제출합니다. `attack_applied`도 확인하세요.
 
+요구사항의 공격 피해·방어 개선·정상 손실을 여러 시드에 대해 비교하려면 전체 6조건 실행을 사용합니다.
+정상 FedAvg, 공격 FedAvg, 두 방어 방식 각각의 정상+방어 및 공격+방어를 실행하며,
+시드별 최종 테스트 정확도 차이와 시드 평균을 `%p`로 저장합니다. 음수 차이도 그대로 보고합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m exp_manager.services.comparison_runner security_001 --security-seeds 42,43,44
+```
+
+보고서는 `results/security_001_security_comparison.json`에 기록됩니다. 각 시드의 여섯 결과와
+정상 대비 공격 피해, 공격 대비 방어 개선, 정상 대비 정상+방어 손실을 노름 클리핑과
+좌표별 중앙값 각각에 대해 확인할 수 있습니다.
+
 ### 결과와 검증
 
 매 라운드 전역 모델과 실제 제출 delta는 `results/<ID>/checkpoints/`와 `updates/`에 `.pt`로 저장합니다.
 클라이언트의 변조 전 모델/delta도 `results/<ID>/clients/`에 저장합니다.
+`rounds/round_NNN.json` 및 `rounds.csv`에는 클라이언트별 정확도·표본 수·학습/제출 시각,
+공격·방어 전후 업데이트 노름, 채택/제외 사유, 악성 비율과 라운드 평가가 기록됩니다.
+채택 업데이트가 3개 미만이면 사유와 평가를 기록하고 전역 모델은 갱신하지 않습니다.
+전체 악성 비율은 `malicious_ratio`, 채택 악성 비율은 `accepted_malicious_ratio`이며,
+채택자가 없을 때 후자는 `N/A`입니다. 분할은 `results/data_splits/<split_id>.json`에 시드,
+클라이언트별 범위 및 데이터 파일 해시와 함께 저장됩니다.
+
+저장된 연합학습 라운드는 동일한 데이터 분할과 라운드 시작 체크포인트로 새 실험 ID에 재실행할 수 있습니다.
+DLG 실험은 `dlg_inputs.json` 및 `inputs/model.pt`의 원본 이미지·정답·노이즈 설정·체크포인트로 재실행됩니다.
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/experiment/replay `
+  -ContentType 'application/json' -Body '{"experiment_id":"fedsec-run","round":3}'
+```
+
+DLG 실험은 `round`를 해당 복원 결과의 라운드 번호로 지정합니다. 원본 이미지와 정답은 DLG 서버에
+공격 입력으로 보내지 않고, 신뢰된 실험 관리자에서 복원 후 MSE 평가와 재실행을 위해 보관합니다.
 JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인트 경로를 기록합니다.
 `GET /api/model/global`은 현재 전체 모델을, 클라이언트 extracted-update API는 저장한 delta를 반환합니다.
 학습·집계·평가 실패 시 가짜 정확도를 만들지 않고 오류를 반환합니다.
@@ -192,9 +223,8 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 검증은 작은 고정 텐서·로컬 합성 데이터 파일·가짜 학습/평가 함수로 수행하며 실제 CNN 학습과 서버 프로세스를 실행하지 않습니다.
 실제 데이터에서의 수렴, 공격 효과, GPU 성능은 사용자의 실행으로 확인해야 합니다.
 
-**DLG는 2번 담당자의 연결 작업이 남아 있습니다.** 기존 가상 DLG는 실제 CNN과 호환되지 않아
-현재 실제 모델의 DLG 요청은 명시적 오류로 차단합니다. `common.model.build_model()`과
-`load_model_checkpoint()`를 이용해 같은 모델·가중치·전처리를 사용하는 DLG로 연결하세요.
+DLG는 `small_cnn_v1`의 실제 그래디언트로 복원합니다. 서버의 복원 입력은 전역 모델과
+클라이언트 그래디언트뿐이며, 원본 이미지·정답은 실험 관리자에서만 평가와 재실행용으로 보관합니다.
 
 ## 실행
 
@@ -210,6 +240,26 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 - **전체 프로세스 종료**: 자식 프로세스 종료 REST API 호출
 - **실험 관리자 종료**: 자식 프로세스를 종료한 뒤 관리자 종료
 - **실험 시작/중단**: 전체 연합학습 또는 DLG 실험 실행
+- **연속 실험**: 개별 실험 탭에서 공통 학습 설정을 정한 뒤 연속 실험 탭에서 24개 설정을 확인·수정하고 한 번에 순차 실행
+- **연속 DLG**: 업로드한 JSON 체크포인트와 32×32 원본 이미지·레이블로 공격, 약한 노이즈 방어, 강한 노이즈 방어를 순차 실행
+
+연속 실험은 기준·지연·부분 참여·레이블 편향 환경 4종과 정상·공격·방어(노름 클리핑/좌표별 중앙값)·
+공격+방어(노름 클리핑/좌표별 중앙값) 시나리오 6종의 전체 24개 조합을 실행합니다.
+각 행에서 라운드 수, 참여율, 지연 클라이언트, 데이터 분포, 공격·방어 설정과 공격 배율을 지정할 수
+있습니다. `추가 설정`에서 시드, 학습 하이퍼파라미터, 연산 장치, 라운드 제한 시간, 표본 제한,
+악성 클라이언트 후보와 라운드별 설정도 실험마다 편집할 수 있습니다. 공통값은 개별 실험 화면의
+설정을 기본값으로 채우며, 각 행에서 수정한 값은 해당 실험에만 적용됩니다. DLG 전용 설정은
+연속 실험에 적용되지 않습니다. 각 실험은 자동 생성된 서로 다른 ID로
+별도 저장되며, `experiment_info.json`에 해당 실험의 시나리오와 설정이 기록됩니다. 배치 전체 진행 및 결과 경로는
+`results/continuous_runs/<batch_id>/manifest.json`에서 확인할 수 있습니다.
+
+연속 DLG는 사전 연합학습 없이 제출된 학습 체크포인트를 세 사례에서 공유합니다.
+업로드한 원본 이미지는 RGB 32×32로 변환되고 직접 선택한 CIFAR-10 레이블과 함께
+세 사례에 동일하게 전달됩니다. 중앙 서버에는 체크포인트와 그래디언트만 전달하고,
+원본 이미지·레이블은 DLG 실행 클라이언트와 실험 관리자 사이에서만 전달합니다.
+노이즈가 작은/큰 방어의 sigma는 연속 DLG 화면에서 설정할 수 있으며, 큰 값은 작은 값보다
+커야 합니다. 결과는 각 자동 생성 실험 ID의 `dlg_result.json`과
+`results/continuous_runs/<batch_id>/manifest.json`에 저장됩니다.
 
 개별 프로세스 실행:
 
@@ -229,9 +279,12 @@ JSON/CSV/API 이력은 무거운 가중치 배열 대신 요약과 체크포인�
 - `GET /api/experiment/config`: 설정 조회
 - `POST /api/experiment/config`: 설정 변경
 - `POST /api/experiment/start`: 실험 시작
+- `POST /api/experiment/continuous/start`: 24개 내부자 협력공격 실험을 순차 시작
+- `POST /api/experiment/continuous/dlg/start`: 제출된 체크포인트·이미지로 DLG 실험 3개를 순차 시작
 - `POST /api/experiment/stop`: 실험 중단
 - `GET /api/experiment/status`: 진행 상태 조회
 - `POST /api/experiment/reset`: 상태 초기화
+- `POST /api/experiment/replay`: 저장된 연합학습 라운드 또는 DLG 실험 재실행
 - `POST /api/results/round`: 중앙 서버의 정상 라운드 결과 수신
 - `POST /api/dlg/results`: 중앙 서버의 DLG 복원 결과 수신
 
@@ -307,9 +360,17 @@ Invoke-RestMethod -Method Post `
 
 ## DLG 연결 예정 인터페이스
 
-아래 흐름은 2번 담당자가 실제 CNN의 DLG를 연결한 뒤 사용합니다. 현재 가상 DLG 경로는 차단되어 있습니다.
-연결 후 웹 UI에서 실험 유형을 `DLG 실험 (정상 연합학습 후 공격)`으로 설정합니다.
-`DLG 사전 정상 연합학습 라운드 수`만큼 정상 라운드를 실행한 뒤 DLG 라운드를 시작합니다.
+웹 UI에서 `DLG 실험` 탭을 선택합니다. 기본 동작은 `DLG 사전 정상 연합학습 라운드 수`만큼 정상 라운드를 실행한 뒤 DLG 라운드를 시작하는 것입니다.
+
+이미 학습된 모델을 사용하려면 `사전 정상학습 전역모델을 사용`을 선택하고 JSON 체크포인트를 업로드하거나 붙여넣습니다. CSV/텍스트 입력은 현재 `small_cnn_v1` 모델의 `state_dict` 파라미터 순서와 일치하는 숫자 가중치 목록이어야 합니다. 설정 저장 시 모델 구조와 가중치를 검증하며, DLG는 사전 학습 라운드 없이 해당 체크포인트로 시작합니다.
+
+내부자 협력공격/정상 연합학습 실험이 완료되면 최종 전역 모델이 아래 파일로 별도 저장됩니다.
+
+```text
+results/<experiment_id>/global_model_for_dlg.json
+```
+
+이 파일을 DLG 실험에서 재사용하려면 DLG 탭에서 `사전 정상학습 전역모델을 사용`을 선택하고, 입력 형식을 `JSON 체크포인트`로 둔 뒤 위 파일을 선택하고 설정을 저장합니다. 저장한 체크포인트로 바로 DLG를 실행하며 사전 연합학습 라운드는 생략됩니다.
 
 DLG 관련 API:
 
@@ -330,9 +391,10 @@ results/<experiment_id>/rounds/round_<번호>.json
 results/<experiment_id>/rounds.csv
 results/<experiment_id>/results.json
 results/<experiment_id>/accuracy.csv
+results/<experiment_id>/global_model_for_dlg.json
 ```
 
-DLG 결과에는 원본 이미지, 복원 이미지, MSE, 방어 설정, 노이즈 sigma가 포함됩니다.
+연합학습 완료 시 `global_model_for_dlg.json`이 생성됩니다. DLG 결과에는 원본 이미지, 복원 이미지, MSE, 방어 설정, 노이즈 sigma가 포함됩니다.
 
 ## 팀 구현 로직 교체
 

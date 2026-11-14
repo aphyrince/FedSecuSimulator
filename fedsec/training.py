@@ -21,7 +21,9 @@ def _limited(dataset: Dataset, limit: int | None) -> Dataset:
 
 def train_local_model(global_model: nn.Module, dataset: Dataset, settings: TrainingSettings,
                       *, seed: int = 42, round_id: int = 1, client_id: int = 0,
-                      check_cancelled: Callable[[], None] | None = None) -> LocalTrainingResult:
+                      check_cancelled: Callable[[], None] | None = None,
+                      progress_callback: Callable[[int, int, int, int], None] | None = None
+                      ) -> LocalTrainingResult:
     """초기 모델을 복사해서 학습한다. 매 라운드 optimizer 초기화, 표본 수는 epoch와 무관.
 
     check_cancelled는 배치마다 호출되는 선택적 콜백이다. 네트워크의 제출 기한은
@@ -61,6 +63,8 @@ def train_local_model(global_model: nn.Module, dataset: Dataset, settings: Train
             count += len(labels)
             loss_sum += loss.item() * len(labels)
             correct += (logits.argmax(1) == labels).sum().item()
+            if progress_callback:
+                progress_callback(epoch, settings.local_epochs, count, len(dataset))
         history.append({"epoch": epoch, "loss": loss_sum / count, "accuracy": correct / count,
                         "elapsed_seconds": time.perf_counter() - started})
     final = copy_state(model.state_dict(), initial)

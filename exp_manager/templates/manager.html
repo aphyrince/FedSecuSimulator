@@ -27,24 +27,108 @@
             <h2>실험 설정 및 실행</h2>
           </div>
         </div>
+        <nav class="run-mode-tabs" role="tablist" aria-label="실험 실행 방식">
+          <button
+            id="individual-mode-tab"
+            class="experiment-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="individual-mode-panel"
+            onclick="selectRunMode('individual')"
+          >
+            <span>개별 실험</span>
+            <small>설정한 실험 하나 실행</small>
+          </button>
+          <button
+            id="continuous-mode-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="continuous-mode-panel"
+            onclick="selectRunMode('continuous')"
+          >
+            <span>연속 실험 · 24개</span>
+            <small>환경 4종 × 보안 시나리오 6종 순차 실행</small>
+          </button>
+          <button
+            id="continuous-dlg-mode-tab"
+            class="experiment-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="continuous-dlg-mode-panel"
+            onclick="selectRunMode('continuous-dlg')"
+          >
+            <span>연속 DLG · 3개</span>
+            <small>공격 · 노이즈 방어 2종</small>
+          </button>
+        </nav>
+
+        <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
         <div class="form-grid">
           <label>실험 ID<input id="experiment-id" /></label>
           <label id="rounds-setting">라운드 수<input id="rounds" type="number" min="1" /></label>
-          <label>참여율<input id="participation" type="number" min="0.01" max="1" step="0.05" /></label>
+          <label
+            >참여율<input id="participation" type="number" min="0.01" max="1" step="0.05"
+          /></label>
           <label>시드<input id="seed" type="number" /></label>
           <label>로컬 epoch<input id="local-epochs" type="number" min="1" /></label>
           <label>배치 크기<input id="batch-size" type="number" min="1" /></label>
           <label>학습률<input id="learning-rate" type="number" min="0.000001" step="any" /></label>
-          <label>연산 장치<select id="device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="auto">자동</option></select></label>
+          <label
+            >연산 장치<select id="device">
+              <option value="cpu">CPU</option>
+              <option value="cuda">CUDA</option>
+              <option value="auto">자동</option>
+            </select></label
+          >
           <label>라운드 제출 제한 시간(초)<input id="round-timeout" type="number" min="1" /></label>
-          <label>클라이언트별 학습 표본 제한<input id="max-train-samples" type="number" min="1" placeholder="비우면 전체" /></label>
-          <label>평가 표본 제한<input id="max-test-samples" type="number" min="1" placeholder="비우면 전체" /></label>
-          <label>데이터 분포
+          <label
+            >클라이언트별 학습 표본 제한<input
+              id="max-train-samples"
+              type="number"
+              min="1"
+              placeholder="비우면 전체"
+          /></label>
+          <label
+            >평가 표본 제한<input
+              id="max-test-samples"
+              type="number"
+              min="1"
+              placeholder="비우면 전체"
+          /></label>
+          <label
+            >데이터 분포
             <select id="distribution">
               <option value="iid">IID</option>
               <option value="non_iid">Non-IID</option>
             </select>
           </label>
+        </div>
+        <div id="experiment-templates" class="experiment-templates">
+          <div>
+            <h3>연합학습 환경 템플릿</h3>
+            <p>
+              선택한 조건을 모든 라운드에 적용합니다. 지연 템플릿은 클라이언트 2·5·8을 지정하며 제출
+              제한 시간은 변경하지 않습니다.
+            </p>
+          </div>
+          <div class="template-buttons">
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('baseline')">
+              기준
+            </button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('delay')">
+              지연
+            </button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('partial')">
+              부분 참여
+            </button>
+            <button type="button" class="secondary" onclick="applyExperimentTemplate('label-bias')">
+              레이블 편향
+            </button>
+          </div>
         </div>
 
         <input id="experiment-type" type="hidden" value="federated" />
@@ -59,7 +143,7 @@
             onclick="selectExperimentTab('federated')"
           >
             <span>내부자 협력공격</span>
-            <small>정상 · 공격 · 공격 + 방어</small>
+            <small>정상 · 공격 · 방어 · 공격 + 방어</small>
           </button>
           <button
             id="dlg-tab"
@@ -83,17 +167,28 @@
         >
           <div class="settings-panel">
             <h3>내부자 협력공격 설정</h3>
-            <p class="panel-description">공격을 끄면 정상 연합학습을 진행합니다. 방어는 공격 라운드에서만 사용할 수 있습니다.</p>
-            <label class="toggle-row"><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label>
+            <p class="panel-description">공격과 방어는 각각 독립적으로 설정할 수 있습니다.</p>
+            <label class="toggle-row"
+              ><input id="attack" type="checkbox" /><span>내부자 협력 공격 사용</span></label
+            >
             <div id="attack-settings" class="conditional-setting">
-              <label>악성 클라이언트 후보
+              <label
+                >악성 클라이언트 후보
                 <input id="malicious" value="0,1" placeholder="쉼표로 구분, 예: 0,1" />
                 <small>공격 ON 시 후보 중 2개를 실험 관리자가 선정합니다.</small>
               </label>
+              <label
+                >업데이트 공격 배율
+                <input id="attack-scale" type="number" step="any" value="-5" />
+                <small>악성 클라이언트가 평균 업데이트에 곱할 값입니다.</small>
+              </label>
             </div>
-            <label class="toggle-row"><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label>
+            <label class="toggle-row"
+              ><input id="defense-enabled" type="checkbox" /><span>중앙 서버 방어 사용</span></label
+            >
             <div id="defense-method-setting" class="conditional-setting">
-              <label>방어 방식
+              <label
+                >방어 방식
                 <select id="defense">
                   <option value="norm_clipping">노름 클리핑</option>
                   <option value="coordinate_median">좌표별 중앙값 집계</option>
@@ -112,19 +207,290 @@
         >
           <div class="settings-panel">
             <h3>DLG 공격 설정</h3>
-            <p class="panel-description">DLG 공격은 사전 정상 학습 후 실행됩니다. 방어를 켜면 클라이언트 그래디언트에 가우시안 노이즈를 추가합니다.</p>
+            <p class="panel-description">
+              DLG 공격은 사전 정상 학습 후 실행됩니다. 방어를 켜면 클라이언트 그래디언트에 가우시안
+              노이즈를 추가합니다.
+            </p>
+            <label class="toggle-row">
+              <input id="use-pretrained-global-model" type="checkbox" />
+              <span>사전 정상학습 전역모델을 사용</span>
+            </label>
             <div class="form-grid">
-              <label>사전 정상 연합학습 라운드 수<input id="dlg-training-rounds" type="number" min="1" value="5" /></label>
-              <label>DLG 복원 반복 횟수<input id="dlg-iterations" type="number" min="1" max="1000" value="2" /></label>
-              <label>DLG 참가 클라이언트
-                <input id="dlg-client" type="number" min="0" max="9" placeholder="비워두면 자동 선정" />
+              <label id="dlg-training-rounds-setting"
+                >사전 정상 연합학습 라운드 수<input
+                  id="dlg-training-rounds"
+                  type="number"
+                  min="1"
+                  value="5"
+              /></label>
+              <label
+                >DLG 복원 반복 횟수<input
+                  id="dlg-iterations"
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value="2"
+              /></label>
+              <label
+                >DLG 참가 클라이언트
+                <input
+                  id="dlg-client"
+                  type="number"
+                  min="0"
+                  max="9"
+                  placeholder="비워두면 자동 선정"
+                />
               </label>
             </div>
-            <label class="toggle-row"><input id="dlg-defense-enabled" type="checkbox" /><span>DLG 그래디언트 노이즈 방어 사용</span></label>
+            <div id="pretrained-model-settings" class="pretrained-model-settings" hidden>
+              <label
+                >입력 형식
+                <select id="pretrained-model-format">
+                  <option value="json">JSON 체크포인트</option>
+                  <option value="csv">CSV 숫자 가중치</option>
+                  <option value="text">텍스트 숫자 가중치</option>
+                </select>
+              </label>
+              <div id="pretrained-model-file-setting">
+                <label
+                  >전역 모델 파일
+                  <input
+                    id="pretrained-model-file"
+                    type="file"
+                    accept=".json,.csv,application/json,text/csv"
+                  />
+                </label>
+              </div>
+              <div id="pretrained-model-text-setting" hidden>
+                <label
+                  >모델 데이터
+                  <textarea
+                    id="pretrained-model-data"
+                    rows="8"
+                    placeholder="모델 state_dict 파라미터 순서에 맞춰 숫자 가중치를 입력하세요."
+                  ></textarea>
+                </label>
+              </div>
+              <small id="pretrained-model-status"
+                >JSON 파일은 weights 객체를 포함한 small_cnn_v1 체크포인트여야 합니다. CSV 파일은
+                파라미터 순서대로 숫자 가중치를 포함해야 합니다.</small
+              >
+            </div>
+            <label class="toggle-row"
+              ><input id="dlg-defense-enabled" type="checkbox" /><span
+                >DLG 그래디언트 노이즈 방어 사용</span
+              ></label
+            >
             <div id="dlg-noise-setting" class="conditional-setting">
-              <label>가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0" /></label>
+              <label
+                >가우시안 노이즈 σ<input id="dlg-noise" type="number" min="0" step="any" value="0"
+              /></label>
             </div>
           </div>
+        </section>
+
+        <div class="experiment-actions">
+          <button onclick="saveExperimentConfig()">설정 저장</button>
+          <button
+            id="start-experiment-button"
+            class="start"
+            onclick="control('/api/experiment/start')"
+            disabled
+          >
+            실험 시작
+          </button>
+          <button
+            id="stop-experiment-button"
+            class="stop"
+            onclick="control('/api/experiment/stop')"
+            disabled
+          >
+            실험 중단
+          </button>
+          <button onclick="control('/api/experiment/reset')">상태 초기화</button>
+        </div>
+
+        <h3>라운드별 설정</h3>
+        <button onclick="buildRoundEditor(readRoundConfigs())">라운드 설정표 생성</button>
+        <div class="round-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>라운드</th>
+                <th>참여율</th>
+                <th>공격</th>
+                <th>지연 클라이언트</th>
+                <th>방어 사용</th>
+                <th>방어 방식</th>
+                <th>단일 실행</th>
+              </tr>
+            </thead>
+            <tbody id="round-configs"></tbody>
+          </table>
+        </div>
+        </section>
+
+        <section
+          id="continuous-mode-panel"
+          class="continuous-panel"
+          role="tabpanel"
+          aria-labelledby="continuous-mode-tab"
+          hidden
+        >
+          <div class="continuous-heading">
+            <div>
+              <h3>내부자 협력공격 연속 실험 설정</h3>
+              <p>
+                아래 24개 행마다 연합학습 설정을 개별 지정할 수 있습니다. 추가 설정에서 시드,
+                학습 조건, 시간 제한, 표본 제한, 악성 후보와 라운드별 설정을 편집하세요.
+                DLG 전용 설정은 연속 실험에 적용되지 않습니다.
+              </p>
+            </div>
+            <button
+              id="reset-continuous-button"
+              type="button"
+              class="secondary"
+              onclick="resetContinuousCases()"
+            >
+              기본 24개 조합으로 복원
+            </button>
+          </div>
+          <div id="continuous-experiments" class="continuous-case-grid"></div>
+          <div class="continuous-actions">
+            <p id="continuous-experiment-status">연속 실험 24개가 준비되었습니다.</p>
+            <div class="continuous-action-buttons">
+              <button
+                id="start-continuous-button"
+                type="button"
+                class="start"
+                onclick="startContinuousExperiments()"
+                disabled
+              >
+                연속 실험 시작 (24개)
+              </button>
+              <button
+                id="stop-continuous-button"
+                type="button"
+                class="stop"
+                onclick="control('/api/experiment/stop')"
+                disabled
+              >
+                연속 실험 중단
+              </button>
+            </div>
+          </div>
+          <pre id="continuous-experiment-log" class="continuous-log"></pre>
+        </section>
+
+        <section
+          id="continuous-dlg-mode-panel"
+          class="continuous-panel"
+          role="tabpanel"
+          aria-labelledby="continuous-dlg-mode-tab"
+          hidden
+        >
+          <div class="continuous-heading">
+            <div>
+              <h3>연속 DLG 실험 설정</h3>
+              <p>
+                사전 연합학습 없이 업로드한 체크포인트를 세 실험에서 공통으로 사용합니다.
+                아래 원본 이미지와 레이블도 모든 실험에 동일하게 전달합니다.
+              </p>
+            </div>
+          </div>
+          <div class="continuous-dlg-input-grid">
+            <section class="continuous-dlg-input-card">
+              <h4>학습된 모델 체크포인트</h4>
+              <label>
+                JSON 체크포인트
+                <input
+                  id="continuous-dlg-checkpoint"
+                  type="file"
+                  accept=".json,application/json"
+                />
+              </label>
+              <p id="continuous-dlg-checkpoint-status" class="continuous-dlg-help">
+                업로드한 체크포인트를 공격 및 두 노이즈 방어 실험에 그대로 사용합니다.
+              </p>
+            </section>
+            <section class="continuous-dlg-input-card">
+              <h4>공통 원본 이미지와 레이블</h4>
+              <label>
+                원본 이미지
+                <input
+                  id="continuous-dlg-original-image"
+                  type="file"
+                  accept="image/*"
+                />
+              </label>
+              <label>
+                CIFAR-10 레이블
+                <select id="continuous-dlg-label">
+                  <option value="0">0 · 비행기</option>
+                  <option value="1">1 · 자동차</option>
+                  <option value="2">2 · 새</option>
+                  <option value="3">3 · 고양이</option>
+                  <option value="4">4 · 사슴</option>
+                  <option value="5">5 · 개</option>
+                  <option value="6">6 · 개구리</option>
+                  <option value="7">7 · 말</option>
+                  <option value="8">8 · 배</option>
+                  <option value="9">9 · 트럭</option>
+                </select>
+              </label>
+              <img id="continuous-dlg-image-preview" alt="연속 DLG 원본 이미지 미리보기" hidden />
+              <p id="continuous-dlg-image-status" class="continuous-dlg-help">
+                업로드 이미지는 RGB 32×32 크기로 변환되어 모든 실험에 공통 사용됩니다.
+              </p>
+            </section>
+          </div>
+          <div class="continuous-dlg-options">
+            <label>
+              DLG 복원 반복 횟수
+              <input id="continuous-dlg-iterations" type="number" min="1" max="1000" value="2" />
+            </label>
+            <label>
+              참가 클라이언트
+              <input id="continuous-dlg-client" type="number" min="0" max="9" placeholder="자동 선정" />
+            </label>
+            <label>
+              노이즈 작음 σ
+              <input id="continuous-dlg-noise-small" type="number" min="0" step="any" value="0.01" />
+            </label>
+            <label>
+              노이즈 큼 σ
+              <input id="continuous-dlg-noise-large" type="number" min="0" step="any" value="0.1" />
+            </label>
+          </div>
+          <div class="continuous-dlg-scenarios" aria-label="연속 DLG 실험 3종">
+            <article><span>01</span><strong>공격</strong><small>그래디언트 노이즈 방어 없음</small></article>
+            <article><span>02</span><strong>공격 + 방어</strong><small>노이즈 작음</small></article>
+            <article><span>03</span><strong>공격 + 방어</strong><small>노이즈 큼</small></article>
+          </div>
+          <div class="continuous-actions">
+            <p id="continuous-dlg-status">체크포인트와 원본 이미지를 업로드하세요.</p>
+            <div class="continuous-action-buttons">
+              <button
+                id="start-continuous-dlg-button"
+                type="button"
+                class="start"
+                onclick="startContinuousDlgExperiments()"
+                disabled
+              >
+                연속 DLG 시작 (3개)
+              </button>
+              <button
+                id="stop-continuous-dlg-button"
+                type="button"
+                class="stop"
+                onclick="control('/api/experiment/stop')"
+                disabled
+              >
+                연속 DLG 중단
+              </button>
+            </div>
+          </div>
+          <pre id="continuous-dlg-log" class="continuous-log"></pre>
         </section>
 
         <div class="data-distribution-panel">
@@ -135,43 +501,18 @@
           <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
         </div>
 
-      <div class="experiment-actions">
-        <button onclick="saveExperimentConfig()">설정 저장</button>
-        <button class="start" onclick="control('/api/experiment/start')">실험 시작</button>
-        <button class="stop" onclick="control('/api/experiment/stop')">실험 중단</button>
-        <button onclick="control('/api/experiment/reset')">상태 초기화</button>
-      </div>
-
-      <h3>라운드별 설정</h3>
-      <button onclick="buildRoundEditor(readRoundConfigs())">라운드 설정표 생성</button>
-      <div class="round-table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>라운드</th>
-            <th>참여율</th>
-            <th>공격</th>
-            <th>지연 클라이언트</th>
-            <th>방어 사용</th>
-            <th>방어 방식</th>
-            <th>단일 실행</th>
-          </tr>
-        </thead>
-        <tbody id="round-configs"></tbody>
-      </table>
-      </div>
-
-      <p id="experiment-status">확인 중...</p>
-      <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
-      <p id="dlg-participant-status">DLG 참가 클라이언트: 없음</p>
-      <pre id="experiment-log"></pre>
+        <p id="experiment-status">확인 중...</p>
+        <p id="malicious-clients-status">선정된 악성 클라이언트: 없음</p>
+        <p id="dlg-participant-status">DLG 참가 클라이언트: 없음</p>
+        <pre id="experiment-log"></pre>
       </section>
 
-      <aside class="status-sidebar" aria-label="시스템 상태">
+      <section class="live-monitoring" aria-label="실시간 시스템 상태">
         <section class="card status-card">
           <p class="eyebrow">System status</p>
           <h2>중앙 서버</h2>
           <p id="server-status">확인 중...</p>
+          <pre id="server-live-status" class="live-status">라운드 정보를 확인 중...</pre>
         </section>
 
         <section class="card status-card">
@@ -185,16 +526,23 @@
                   <th>주소</th>
                   <th>프로세스</th>
                   <th>API</th>
+                  <th>참여 가능</th>
+                  <th>선정</th>
+                  <th>악성</th>
+                  <th>지연</th>
+                  <th>상태</th>
+                  <th>진행 / 전체 · 잔여 표본 (현재 epoch)</th>
                 </tr>
               </thead>
               <tbody id="clients"></tbody>
             </table>
           </div>
         </section>
-      </aside>
+      </section>
     </main>
 
     <script defer src="{{ url_for('static', filename='js/round-config.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/continuous-experiments.js') }}"></script>
     <script defer src="{{ url_for('static', filename='js/manager.js') }}"></script>
   </body>
 </html>

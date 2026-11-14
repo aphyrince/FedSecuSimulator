@@ -1,10 +1,13 @@
 import threading
+import hashlib
+import json
 from pathlib import Path
 
 from exp_manager.services.data_loader import CifarDataLoader
 from exp_manager.services.data_splitter import DataSplitter
 from exp_manager.services.rest_client import RestClient
 from exp_manager.utils.data_config import read_data_config
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 class DataDistributionManager:
@@ -20,6 +23,9 @@ class DataDistributionManager:
         self.state = {
             "configured": False,
             "message": "데이터가 분배되지 않았습니다.",
+            "seed": None,
+            "split_id": None,
+            "split_manifest_path": None,
         }
 
     def status(self) -> dict:
@@ -30,6 +36,9 @@ class DataDistributionManager:
                 "config": read_data_config(),
                 "test_range": self.state.get("test_range"),
                 "client_ranges": self.state.get("client_ranges", []),
+                "seed": self.state.get("seed"),
+                "split_id": self.state.get("split_id"),
+                "split_manifest_path": self.state.get("split_manifest_path"),
             }
 
     def distribute(self, seed: int = 42) -> dict:
@@ -62,12 +71,42 @@ class DataDistributionManager:
             sent_client_ranges = self._send_client_ranges(
                 config["source_dir"], client_ranges
             )
+            file_hashes = {
+                str(path.relative_to(source_path)).replace("\\", "/"): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in [*train_files, *test_files]
+            }
+            split_payload = {
+                "seed": seed,
+                "source_dir": config["source_dir"],
+                "file_sha256": file_hashes,
+                "test_range": test_payload,
+                "client_ranges": sent_client_ranges,
+            }
+            split_id = hashlib.sha256(
+                json.dumps(split_payload, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:16]
+            split_dir = PROJECT_ROOT_PATH / "results" / "data_splits"
+            split_dir.mkdir(parents=True, exist_ok=True)
+            split_manifest_path = split_dir / f"{split_id}.json"
+            split_manifest_path.write_text(
+                json.dumps(
+                    {"split_id": split_id, **split_payload},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
             self.state.update(
                 configured=True,
                 message="훈련 및 테스트 데이터 범위를 분배했습니다.",
                 test_range=test_payload,
                 client_ranges=sent_client_ranges,
+                seed=seed,
+                split_id=split_id,
+                split_manifest_path=str(split_manifest_path),
             )
             return self.status()
 

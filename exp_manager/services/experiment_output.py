@@ -12,6 +12,8 @@ ROUND_LOG_FIELDS = [
     "delayed_clients",
     "malicious_selected",
     "malicious_accepted",
+    "malicious_ratio",
+    "accepted_malicious_ratio",
     "attack_enabled",
     "attack_type",
     "attack_scale",
@@ -20,6 +22,13 @@ ROUND_LOG_FIELDS = [
     "defense_enabled",
     "defense_type",
     "clip_norm",
+    "fedavg_samples",
+    "defense_aggregate_norm",
+    "client_activity",
+    "submission_attempts",
+    "client_updates",
+    "round_config",
+    "model_updated",
     "accuracy",
     "loss",
     "reason",
@@ -55,9 +64,11 @@ def save_experiment_outputs(
             writer.writerow(
                 {
                     key: (
-                        ",".join(map(str, value))
-                        if isinstance(value, list)
+                        json.dumps(value, ensure_ascii=False)
+                        if isinstance(value, (dict, list))
                         else value
+                        if value is not None
+                        else ""
                     )
                     for key in ROUND_LOG_FIELDS
                     for value in [result.get(key, "")]

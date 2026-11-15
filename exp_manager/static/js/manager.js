@@ -317,16 +317,142 @@ function applyExperimentTemplate(templateName) {
           !experiment.continuous_experiment ||
           experiment.continuous_experiment.experiment_type !== 'federated_dlg' ||
           experiment.continuous_experiment.status !== 'running';
-        const classDistribution = data.distribution === 'non_iid'
-          ? ` · 클라이언트별 클래스 수: ${(data.client_class_counts || [])
-            .map((item) => `${item.client_id}=${Object.entries(item.class_counts || {})
-              .filter(([, count]) => count > 0)
-              .map(([label, count]) => `${label}:${count}`)
-              .join(',')}`)
-            .join(' / ')}`
-          : '';
-        document.getElementById('data-status').textContent =
-          `${data.message} · 분포: ${data.distribution || '—'}${classDistribution} · 훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+        const statusElement = document.getElementById('data-status');
+        const sourceElement = document.getElementById('data-source-status');
+        const detailsElement = document.getElementById('data-split-details');
+        const methodElement = document.getElementById('data-split-method');
+        const clientsElement = document.getElementById('data-split-clients');
+        clientsElement.replaceChildren();
+
+        if (!data.configured) {
+          statusElement.textContent = data.message;
+          sourceElement.textContent = '';
+          methodElement.textContent = '';
+          detailsElement.hidden = true;
+          return;
+        }
+
+        const isIntegratedMode =
+          document.getElementById('continuous-linked-mode-tab').getAttribute('aria-selected') === 'true';
+        const distributions = isIntegratedMode ? ['iid', 'non_iid'] : [data.distribution];
+        const distributionSummaries = data.distribution_summaries || {};
+        const cifarLabels = [
+          '비행기',
+          '자동차',
+          '새',
+          '고양이',
+          '사슴',
+          '개',
+          '개구리',
+          '말',
+          '배',
+          '트럭',
+        ];
+        const sampleCounts = data.client_sample_counts?.length
+          ? data.client_sample_counts
+          : (data.client_class_counts || []).map(({ client_id, num_samples }) => ({
+            client_id,
+            num_samples,
+          }));
+        const classCountsByClient = new Map(
+          (data.client_class_counts || []).map((item) => [
+            item.client_id,
+            item.class_counts || {},
+          ]),
+        );
+        const trainingImageSet = data.training_image_set || {};
+        const totalSamples = trainingImageSet.sample_count ??
+          sampleCounts.reduce((total, item) => total + (item.num_samples || 0), 0);
+        const imageSetId = trainingImageSet.sha256?.slice(0, 10) || data.split_id || '—';
+        const displayDistribution = isIntegratedMode
+          ? 'IID + Non-IID'
+          : data.distribution === 'non_iid' ? 'Non-IID' : 'IID';
+        const pairedPool = data.comparison_protocol ? ' · 공통 비교 이미지 풀' : '';
+        statusElement.textContent =
+          `${data.message} · ${displayDistribution} · 전체 ${totalSamples.toLocaleString()}장 · 이미지 집합 ${imageSetId}${pairedPool}`;
+        sourceElement.textContent =
+          `훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+        if (isIntegratedMode) {
+          methodElement.textContent =
+            '통합 실험은 IID와 Non-IID를 모두 실행합니다. 각 분포의 클라이언트별 할당을 함께 표시합니다.';
+        } else if (data.distribution === 'non_iid') {
+          methodElement.textContent = data.comparison_protocol
+            ? 'Non-IID: 클라이언트마다 두 클래스에서 250장씩 배정됩니다.'
+            : 'Non-IID: 아래에서 클라이언트별 할당 클래스와 표본 수를 확인할 수 있습니다.';
+        } else {
+          methodElement.textContent = data.comparison_protocol
+            ? 'IID: 클라이언트마다 10개 클래스에서 50장씩 배정됩니다.'
+            : 'IID: 아래에서 클라이언트별 클래스 분포를 확인할 수 있습니다.';
+        }
+
+        for (const distribution of distributions) {
+          const summary = distributionSummaries[distribution] ||
+            (distribution === data.distribution ? data : null);
+          const heading = document.createElement('tr');
+          heading.className = 'data-split-group-heading';
+          const headingCell = document.createElement('th');
+          headingCell.colSpan = 3;
+          headingCell.textContent = distribution === 'non_iid' ? 'Non-IID 분할' : 'IID 분할';
+          heading.appendChild(headingCell);
+          clientsElement.appendChild(heading);
+
+          if (!summary) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 3;
+            cell.textContent = '분할 요약을 불러올 수 없습니다. 데이터 분배를 다시 실행해 주세요.';
+            row.appendChild(cell);
+            clientsElement.appendChild(row);
+            continue;
+          }
+
+          const summarySampleCounts = summary.client_sample_counts?.length
+            ? summary.client_sample_counts
+            : (summary.client_class_counts || []).map(({ client_id, num_samples }) => ({
+              client_id,
+              num_samples,
+            }));
+          const summaryClassCountsByClient = new Map(
+            (summary.client_class_counts || []).map((item) => [
+              item.client_id,
+              item.class_counts || {},
+            ]),
+          );
+          for (const client of summarySampleCounts) {
+            const entries = Object.entries(
+              summaryClassCountsByClient.get(client.client_id) || {},
+            ).filter(([, count]) => count > 0);
+            const sameCount = entries.length > 0 &&
+              entries.every(([, count]) => count === entries[0][1]);
+            const labelName = (label) =>
+              cifarLabels[Number(label)] ? `${label} ${cifarLabels[Number(label)]}` : label;
+            let distributionLabel = '클래스 분포 없음';
+            if (sameCount && entries.length === 10) {
+              distributionLabel = `10개 클래스 · ${entries[0][1]}장씩`;
+            } else if (sameCount && entries.length === 2) {
+              distributionLabel = entries
+                .map(([label, count]) => `${labelName(label)} ${count}장`)
+                .join(' · ');
+            } else if (entries.length > 0) {
+              distributionLabel = entries
+                .map(([label, count]) => `${labelName(label)}:${count}`)
+                .join(' · ');
+            }
+
+            const row = document.createElement('tr');
+            for (const value of [
+              `Client ${client.client_id}`,
+              `${Number(client.num_samples || 0).toLocaleString()}장`,
+              distributionLabel,
+            ]) {
+              const cell = document.createElement('td');
+              cell.textContent = value;
+              row.appendChild(cell);
+            }
+            clientsElement.appendChild(row);
+          }
+        }
+        detailsElement.hidden = distributions.length === 0;
       }
 
       async function distributeData() {
@@ -461,6 +587,7 @@ function applyExperimentTemplate(templateName) {
           tab.setAttribute('aria-selected', String(selected));
           document.getElementById(panelId).hidden = !selected;
         });
+        refreshDataStatus();
       }
 
       function updatePretrainedModelInput() {

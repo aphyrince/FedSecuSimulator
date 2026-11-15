@@ -79,9 +79,26 @@
         </nav>
 
         <div class="data-distribution-panel">
-          <div>
+          <div class="data-distribution-info">
             <h3>CIFAR-10 데이터 분배</h3>
             <p id="data-status">데이터 분배 상태를 확인 중...</p>
+            <small id="data-source-status" class="data-source-status"></small>
+            <details id="data-split-details" class="data-split-details" hidden>
+              <summary>클라이언트별 분할 요약</summary>
+              <p id="data-split-method" class="data-split-method"></p>
+              <div class="data-split-table-wrap">
+                <table class="data-split-table">
+                  <thead>
+                    <tr>
+                      <th>클라이언트</th>
+                      <th>표본 수</th>
+                      <th>할당 클래스와 표본 수</th>
+                    </tr>
+                  </thead>
+                  <tbody id="data-split-clients"></tbody>
+                </table>
+              </div>
+            </details>
           </div>
           <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
         </div>

@@ -1283,6 +1283,20 @@ class ExperimentManager:
             "test_range": snapshot["test_range"],
             "client_ranges": snapshot["client_ranges"],
             "client_class_counts": snapshot.get("client_class_counts", []),
+            "client_sample_counts": snapshot.get(
+                "client_sample_counts",
+                [
+                    {
+                        "client_id": item["client_id"],
+                        "num_samples": item["num_samples"],
+                    }
+                    for item in snapshot.get("client_class_counts", [])
+                ],
+            ),
+            "training_image_set": snapshot.get(
+                "training_image_set", manifest.get("training_image_set")
+            ),
+            "comparison_protocol": manifest.get("comparison_protocol"),
             "file_sha256": manifest.get("file_sha256", {}),
             "manifest_path": snapshot.get("split_manifest_path"),
         }

@@ -9,6 +9,7 @@ import numpy as np
 
 from fedsec.data import CifarRangeDataset
 from exp_manager.services.data_distribution import DataDistributionManager
+from exp_manager.services.experiment_runner import ExperimentManager
 
 
 class DataDistributionTests(unittest.TestCase):
@@ -62,8 +63,139 @@ class DataDistributionTests(unittest.TestCase):
             self.assertEqual(
                 manifest["client_class_counts"], status["client_class_counts"]
             )
+            self.assertEqual(
+                manifest["client_sample_counts"], status["client_sample_counts"]
+            )
+            self.assertEqual(
+                manifest["training_image_set"]["sample_count"], 6
+            )
+            self.assertEqual(
+                manifest["training_image_set"]["files"][0]["indices"],
+                list(range(6)),
+            )
             self.assertEqual(set(manifest["file_sha256"]), {"train", "test"})
             self.assertTrue(status["split_id"])
+
+    def test_iid_and_non_iid_share_fixed_image_pool_and_sample_counts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "cifar"
+            source.mkdir()
+            train_path = source / "train"
+            test_path = source / "test"
+            labels = [label for label in range(10) for _ in range(600)]
+            for path, batch_labels in ((train_path, labels), (test_path, [0, 1, 2])):
+                with path.open("wb") as handle:
+                    pickle.dump(
+                        {
+                            b"data": [bytes(3072)] * len(batch_labels),
+                            b"labels": batch_labels,
+                        },
+                        handle,
+                    )
+
+            config = {
+                "source_path": str(source),
+                "source_dir": str(source),
+                "train_files": [],
+                "test_files": [],
+            }
+            manifests = {}
+            for distribution, seed in (("iid", 7), ("non_iid", 91)):
+                manager = DataDistributionManager(process_manager=None, client_count=10)
+                manager.loader.resolve_files = lambda _source, _names, kind: [
+                    train_path if kind == "train" else test_path
+                ]
+                manager._send_test_range = lambda _payload: None
+                manager._send_client_ranges = lambda _source, assignments: [
+                    {"client_id": index, **item}
+                    for index, item in enumerate(assignments)
+                ]
+                with patch(
+                    "exp_manager.services.data_distribution.read_data_config",
+                    return_value=config,
+                ), patch(
+                    "exp_manager.services.data_distribution.PROJECT_ROOT_PATH", root
+                ):
+                    status = manager.distribute(seed=seed, distribution=distribution)
+
+                self.assertEqual(
+                    set(status["distribution_summaries"]), {"iid", "non_iid"}
+                )
+                self.assertEqual(
+                    status["distribution_summaries"]["iid"]["training_image_set"],
+                    status["distribution_summaries"]["non_iid"]["training_image_set"],
+                )
+                self.assertEqual(
+                    status["distribution_summaries"]["iid"]["client_sample_counts"],
+                    [{"client_id": client_id, "num_samples": 500} for client_id in range(10)],
+                )
+                self.assertEqual(
+                    status["distribution_summaries"]["non_iid"]["client_sample_counts"],
+                    [{"client_id": client_id, "num_samples": 500} for client_id in range(10)],
+                )
+                manifest = json.loads(
+                    Path(status["split_manifest_path"]).read_text(encoding="utf-8")
+                )
+                manifests[distribution] = manifest
+
+                self.assertEqual(manifest["distribution"], distribution)
+                self.assertEqual(manifest["training_image_set"]["sample_count"], 5000)
+                self.assertEqual(len(manifest["training_image_set"]["files"][0]["indices"]), 5000)
+                self.assertEqual(
+                    [item["num_samples"] for item in manifest["client_sample_counts"]],
+                    [500] * 10,
+                )
+                self.assertEqual(manifest["comparison_protocol"]["name"], "cifar10_paired_5000")
+                self.assertEqual(manifest["comparison_protocol"]["pool_seed"], 42)
+
+                runner = ExperimentManager.__new__(ExperimentManager)
+                runner.results_dir = root / "results"
+                runner.data_manager = manager
+                runner._write_experiment_info(
+                    {
+                        "experiment_id": f"{distribution}-run",
+                        "experiment_type": "federated",
+                        "data_distribution": distribution,
+                    }
+                )
+                experiment_info = json.loads(
+                    (
+                        root
+                        / "results"
+                        / f"{distribution}-run"
+                        / "experiment_info.json"
+                    ).read_text(encoding="utf-8")
+                )
+                split_snapshot = experiment_info["data_split"]
+                self.assertEqual(split_snapshot["distribution"], distribution)
+                self.assertEqual(
+                    split_snapshot["training_image_set"],
+                    manifest["training_image_set"],
+                )
+                self.assertEqual(
+                    split_snapshot["client_sample_counts"],
+                    manifest["client_sample_counts"],
+                )
+
+            iid_pool = manifests["iid"]["training_image_set"]
+            non_iid_pool = manifests["non_iid"]["training_image_set"]
+            self.assertEqual(iid_pool["files"], non_iid_pool["files"])
+            self.assertEqual(iid_pool["sha256"], non_iid_pool["sha256"])
+            self.assertEqual(len(set(iid_pool["files"][0]["indices"])), 5000)
+
+            iid_counts = manifests["iid"]["client_class_counts"]
+            for client in iid_counts:
+                self.assertEqual(
+                    client["class_counts"], {str(label): 50 for label in range(10)}
+                )
+
+            non_iid_counts = manifests["non_iid"]["client_class_counts"]
+            for client in non_iid_counts:
+                self.assertEqual(
+                    sorted(count for count in client["class_counts"].values() if count),
+                    [250, 250],
+                )
 
     def test_non_iid_distribution_assigns_label_skewed_indices_and_records_counts(self):
         with tempfile.TemporaryDirectory() as temporary:

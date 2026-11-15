@@ -29,6 +29,9 @@ class DataDistributionManager:
             "split_manifest_path": None,
             "distribution": None,
             "client_class_counts": [],
+            "client_sample_counts": [],
+            "training_image_set": None,
+            "distribution_summaries": {},
         }
 
     def status(self) -> dict:
@@ -44,6 +47,9 @@ class DataDistributionManager:
                 "split_manifest_path": self.state.get("split_manifest_path"),
                 "distribution": self.state.get("distribution"),
                 "client_class_counts": self.state.get("client_class_counts", []),
+                "client_sample_counts": self.state.get("client_sample_counts", []),
+                "training_image_set": self.state.get("training_image_set"),
+                "distribution_summaries": self.state.get("distribution_summaries", {}),
             }
 
     def distribute(self, seed: int = 42, distribution: str = "iid") -> dict:
@@ -81,6 +87,13 @@ class DataDistributionManager:
             client_class_counts = self._count_classes(
                 client_assignments, labels_by_file
             )
+            client_sample_counts = [
+                {
+                    "client_id": item["client_id"],
+                    "num_samples": item["num_samples"],
+                }
+                for item in client_class_counts
+            ]
             test_payload = {
                 "source_dir": config["source_dir"],
                 "ranges": test_segments,
@@ -89,12 +102,58 @@ class DataDistributionManager:
             sent_client_ranges = self._send_client_ranges(
                 config["source_dir"], client_assignments
             )
+            training_image_set = self._training_image_set(sent_client_ranges)
             file_hashes = {
                 str(path.relative_to(source_path)).replace("\\", "/"): self._file_hash(
                     path
                 )
                 for path in [*train_files, *test_files]
             }
+            distribution_summaries = {}
+            for summary_distribution in ("iid", "non_iid"):
+                if summary_distribution == distribution:
+                    summary_assignments = client_assignments
+                    summary_class_counts = client_class_counts
+                    summary_image_set = training_image_set
+                else:
+                    summary_assignments, _ = self.splitter.split(
+                        train_segments,
+                        self.client_count,
+                        seed,
+                        distribution=summary_distribution,
+                        labels_by_file=labels_by_file,
+                    )
+                    summary_class_counts = self._count_classes(
+                        summary_assignments, labels_by_file
+                    )
+                    summary_image_set = self._training_image_set(
+                        [
+                            {"client_id": client_id, **assignment}
+                            for client_id, assignment in enumerate(summary_assignments)
+                        ]
+                    )
+                summary_sample_counts = [
+                    {
+                        "client_id": item["client_id"],
+                        "num_samples": item["num_samples"],
+                    }
+                    for item in summary_class_counts
+                ]
+                distribution_summaries[summary_distribution] = {
+                    "distribution": summary_distribution,
+                    "client_class_counts": summary_class_counts,
+                    "client_sample_counts": summary_sample_counts,
+                    "training_image_set": {
+                        "sample_count": summary_image_set["sample_count"],
+                        "sha256": summary_image_set["sha256"],
+                    },
+                    "comparison_protocol": self._comparison_protocol(
+                        summary_distribution,
+                        summary_sample_counts,
+                        summary_class_counts,
+                        summary_image_set,
+                    ),
+                }
             split_payload = {
                 "seed": seed,
                 "source_dir": config["source_dir"],
@@ -103,6 +162,14 @@ class DataDistributionManager:
                 "test_range": test_payload,
                 "client_ranges": sent_client_ranges,
                 "client_class_counts": client_class_counts,
+                "client_sample_counts": client_sample_counts,
+                "training_image_set": training_image_set,
+                "comparison_protocol": self._comparison_protocol(
+                    distribution,
+                    client_sample_counts,
+                    client_class_counts,
+                    training_image_set,
+                ),
             }
             split_id = hashlib.sha256(
                 json.dumps(split_payload, sort_keys=True).encode("utf-8")
@@ -129,8 +196,80 @@ class DataDistributionManager:
                 split_manifest_path=str(split_manifest_path),
                 distribution=distribution,
                 client_class_counts=client_class_counts,
+                client_sample_counts=client_sample_counts,
+                training_image_set=training_image_set,
+                distribution_summaries=distribution_summaries,
             )
             return self.status()
+
+    @staticmethod
+    def _training_image_set(client_assignments: list[dict]) -> dict:
+        indices_by_file = {}
+        for assignment in client_assignments:
+            for segment in assignment.get("ranges", []):
+                indices_by_file.setdefault(segment["file"], set()).update(
+                    range(segment["start"], segment["end"])
+                )
+            for segment in assignment.get("indices_by_file", []):
+                indices_by_file.setdefault(segment["file"], set()).update(
+                    segment["indices"]
+                )
+        files = [
+            {"file": file_name, "indices": sorted(indices)}
+            for file_name, indices in sorted(indices_by_file.items())
+        ]
+        canonical = json.dumps(files, sort_keys=True, separators=(",", ":"))
+        return {
+            "sample_count": sum(len(item["indices"]) for item in files),
+            "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "files": files,
+        }
+
+    @staticmethod
+    def _comparison_protocol(
+        distribution: str,
+        client_sample_counts: list[dict],
+        client_class_counts: list[dict],
+        training_image_set: dict,
+    ) -> dict | None:
+        if (
+            len(client_sample_counts) != DataSplitter.COMPARISON_CLIENT_COUNT
+            or training_image_set["sample_count"] != 5000
+            or any(item["num_samples"] != 500 for item in client_sample_counts)
+        ):
+            return None
+        if distribution == "iid":
+            expected_classes = {str(label): 50 for label in range(10)}
+            if any(
+                item["class_counts"] != expected_classes
+                for item in client_class_counts
+            ):
+                return None
+        elif distribution == "non_iid":
+            if any(
+                sorted(item for item in counts["class_counts"].values() if item)
+                != [250, 250]
+                for counts in client_class_counts
+            ):
+                return None
+            totals = {
+                str(label): sum(
+                    item["class_counts"][str(label)]
+                    for item in client_class_counts
+                )
+                for label in range(10)
+            }
+            if any(total != 500 for total in totals.values()):
+                return None
+        else:
+            return None
+        return {
+            "name": "cifar10_paired_5000",
+            "version": 1,
+            "pool_seed": DataSplitter.COMPARISON_POOL_SEED,
+            "samples_per_client": 500,
+            "samples_per_class": 500,
+        }
 
     def _file_hash(self, path: Path) -> str:
         stat = path.stat()

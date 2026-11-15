@@ -1,5 +1,19 @@
 import pickle
+from functools import lru_cache
 from pathlib import Path
+
+
+@lru_cache(maxsize=10)
+def _read_labels(path: str, size: int, modified: int) -> list[int]:
+    del size, modified
+    with Path(path).open("rb") as source:
+        batch = pickle.load(source, encoding="bytes")
+    labels = batch.get(b"labels", batch.get("labels"))
+    if not isinstance(labels, (list, tuple)) or any(
+        type(label) is not int or not 0 <= label <= 9 for label in labels
+    ):
+        raise ValueError(f"{Path(path).name}에 유효한 CIFAR-10 레이블이 없습니다.")
+    return labels
 
 
 class CifarDataLoader:
@@ -37,3 +51,7 @@ class CifarDataLoader:
             if key in batch:
                 return len(batch[key])
         raise ValueError(f"{file_path.name}에 data 필드가 없습니다.")
+
+    def labels(self, file_path: Path) -> list[int]:
+        stat = file_path.stat()
+        return _read_labels(str(file_path.resolve()), stat.st_size, stat.st_mtime_ns)

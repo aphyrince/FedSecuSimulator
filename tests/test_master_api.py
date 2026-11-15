@@ -392,6 +392,100 @@ class ApiTests(unittest.TestCase):
             len(stored_updates),
         )
 
+    def test_round_log_distinguishes_selected_delayed_accepted_and_missing_clients(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.config["RESULTS_DIR"] = str(self.root)
+        model = vector_model()
+        app.extensions["global_model"] = model
+        app.extensions["available_clients"][1] = [0, 1, 2]
+        app.extensions["selected_clients"][1] = [0, 1, 2]
+        selected_at = "2026-01-01T00:00:00+00:00"
+        app.extensions["update_submission_status"][1] = {
+            0: {
+                "status": "excluded",
+                "reason": "configured_delay",
+                "selected_at": selected_at,
+                "excluded_at": "2026-01-01T00:00:01+00:00",
+                "delayed": True,
+            },
+            1: {
+                "status": "received",
+                "selected_at": selected_at,
+                "received_at": "2026-01-01T00:00:02+00:00",
+            },
+            2: {"status": "waiting", "selected_at": selected_at},
+        }
+        app.extensions["round_updates"][1] = {
+            1: make_update(model, 1, {"w": [1.0, 2.0]})
+        }
+        app.extensions["available_clients"][1] = [0, 1, 2]
+        evaluation = {
+            "accuracy": 0.25,
+            "loss": 1.0,
+            "num_test_samples": 10,
+            "correct_predictions": 2,
+            "metrics": {},
+            "dataset_fingerprint": "test-data",
+        }
+        with patch(
+            "server.routes.aggregation.evaluate_global_model",
+            return_value=evaluation,
+        ):
+            response = app.test_client().post(
+                "/api/rounds/1/execute",
+                json={
+                    "experiment_id": model["experiment_id"],
+                    "selected_clients": [0, 1, 2],
+                    "updates": [make_update(model, 1, {"w": [1.0, 2.0]})],
+                    "attack_enabled": False,
+                    "malicious_clients": [],
+                    "nums_clients": 3,
+                    "seed": 42,
+                    "participation_rate": 1.0,
+                    "delay_clients": [0],
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        activity = {item["client_id"]: item for item in response.json["client_activity"]}
+        self.assertTrue(activity[0]["selected"])
+        self.assertTrue(activity[0]["delayed"])
+        self.assertEqual(activity[0]["status"], "excluded")
+        self.assertEqual(activity[0]["reason"], "configured_delay")
+        self.assertEqual(activity[0]["selected_at"], selected_at)
+        self.assertEqual(activity[1]["status"], "accepted")
+        self.assertEqual(activity[1]["submission_status"], "accepted")
+        self.assertIsNotNone(activity[1]["received_at"])
+        self.assertEqual(activity[1]["submitted_at"], activity[1]["received_at"])
+        self.assertIsNotNone(activity[1]["accepted_at"])
+        self.assertEqual(activity[2]["reason"], "no_update_received")
+        self.assertFalse(activity[2]["delayed"])
+
+    def test_round_timeout_does_not_overwrite_configured_delay_exclusion(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.extensions["selected_clients"][1] = [0, 1]
+        app.extensions["round_updates"][1] = {}
+        app.extensions["update_submission_status"][1] = {
+            0: {
+                "status": "excluded",
+                "reason": "configured_delay",
+                "delayed": True,
+            },
+            1: {"status": "waiting", "delayed": False},
+        }
+
+        response = app.test_client().post("/api/rounds/1/timeout")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["expired_clients"], [1])
+        self.assertEqual(
+            app.extensions["update_submission_status"][1][0]["status"],
+            "excluded",
+        )
+        self.assertEqual(
+            app.extensions["update_submission_status"][1][1]["status"],
+            "expired",
+        )
+
     def test_manager_propagates_settings_rolls_back_invalid_values_and_respects_candidates(self):
         class Processes:
             def client_registry(self):

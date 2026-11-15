@@ -72,11 +72,15 @@ class AlgorithmsTests(unittest.TestCase):
         other = collude_updates(self.model, second, [first], scale=-5)
         self.assertEqual(aggregate_fedavg(self.model, [attacked, other])["global_model"]["weights"], {"w": [-5.0, -10.0]})
 
-    def test_single_malicious_participant_submits_clean_update(self):
+    def test_single_malicious_participant_scales_its_own_update(self):
         own = make_update(self.model, 0, {"w": [1.0, 2.0]})
         result = collude_updates(self.model, own, [])
-        self.assertFalse(result["update"]["attack_applied"])
-        self.assertEqual(result["update"]["values"], own["update"]["values"])
+        self.assertTrue(result["update"]["attack_applied"])
+        self.assertEqual(
+            result["update"]["attack_reason"],
+            "single_malicious_client_self_scaled",
+        )
+        self.assertEqual(result["update"]["values"], {"w": [-5.0, -10.0]})
 
     def test_clipping_changes_actual_submitted_weights_and_aggregation(self):
         own = make_update(self.model, 0, {"w": [3.0, 4.0]})

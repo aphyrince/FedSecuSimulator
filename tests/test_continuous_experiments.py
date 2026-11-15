@@ -174,6 +174,16 @@ def test_continuous_worker_runs_cases_in_order_and_persists_outcomes():
         manager._write_continuous_manifest(manifest_path, manifest)
         for index, config in enumerate(cases, start=1):
             manager._write_continuous_experiment_info(index, config, len(cases))
+        distribution_calls = []
+
+        class DataManager:
+            def status(self):
+                return {"configured": False}
+
+            def distribute(self, seed, distribution):
+                distribution_calls.append((seed, distribution))
+
+        manager.data_manager = DataManager()
         manager.state["status"] = "running"
         manager.state["continuous_experiment"] = {
             "batch_id": batch_id,
@@ -203,9 +213,38 @@ def test_continuous_worker_runs_cases_in_order_and_persists_outcomes():
             "completed"
         ] * CONTINUOUS_CASE_COUNT
         assert started == [(case["experiment_id"], 1) for case in cases]
+        assert distribution_calls == [
+            (case["seed"], case["data_distribution"]) for case in cases
+        ]
         assert manager.state["status"] == "completed"
         assert manager.state["continuous_experiment"]["status"] == "completed"
         assert manager.get_config()["experiment_id"] == base_config["experiment_id"]
+
+
+def test_individual_start_redistributes_using_experiment_seed_and_distribution():
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        manager = ExperimentManager(ProcessManager(), Path(temporary_directory), 10)
+        manager.config.update(seed=17, data_distribution="non_iid")
+        calls = []
+
+        class DataManager:
+            def status(self):
+                return {
+                    "configured": True,
+                    "test_range": {"source_dir": "dataset", "ranges": []},
+                    "client_ranges": [],
+                    "seed": 17,
+                    "distribution": "non_iid",
+                }
+
+            def distribute(self, seed, distribution):
+                calls.append((seed, distribution))
+
+        manager.data_manager = DataManager()
+        with patch("exp_manager.services.experiment_runner.threading.Thread"):
+            manager.start()
+
+        assert calls == [(17, "non_iid")]
 
 
 def test_continuous_start_rejects_missing_matrix_cases():

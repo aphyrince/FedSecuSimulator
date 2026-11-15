@@ -64,7 +64,9 @@ def receive_client_update(round_id: int):
         })
         if type(client_id) is int and client_id >= 0:
             if round_status.get(client_id, {}).get("status") != "received":
+                previous = round_status.get(client_id, {})
                 round_status[client_id] = {
+                    **previous,
                     "status": "rejected",
                     "reason": reason,
                     "rejected_at": now,
@@ -108,6 +110,7 @@ def receive_client_update(round_id: int):
         return reject("Duplicate client update", 409)
     round_updates[int(client_id)] = payload
     round_status[int(client_id)] = {
+        **round_status.get(int(client_id), {}),
         "status": "received",
         "num_samples": num_samples,
         "received_at": datetime.now(timezone.utc).isoformat(),
@@ -166,15 +169,21 @@ def notify_update_timeout(round_id: int):
     """기한 초과 클라이언트에 타임아웃을 알리고 미제출 상태를 저장한다."""
     selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
     received = current_app.extensions.get("round_updates", {}).get(round_id, {})
-    missing = sorted(set(selected) - set(received))
     registered = current_app.extensions.get("clients", {})
     statuses = current_app.extensions.setdefault("update_submission_status", {})
     round_status = statuses.setdefault(round_id, {})
+    missing = sorted(
+        client_id
+        for client_id in set(selected) - set(received)
+        if round_status.get(client_id, {}).get("reason") != "configured_delay"
+    )
     notified = []
 
     for client_id in missing:
-        round_status.setdefault(client_id, {})["status"] = "expired"
-        round_status[client_id]["expired_at"] = datetime.now(timezone.utc).isoformat()
+        round_status.setdefault(client_id, {}).update(
+            status="expired",
+            expired_at=datetime.now(timezone.utc).isoformat(),
+        )
         client = registered.get(client_id)
         if client:
             try:
@@ -328,18 +337,23 @@ def start_round(round_id: int):
     selected_clients = [available_clients[index] for index in selected]
     selected_ids = [client["client_id"] for client in selected_clients]
     current_app.extensions["selected_clients"][round_id] = selected_ids
+    selected_at = datetime.now(timezone.utc).isoformat()
     limit = TrainingSettings.from_dict(config).max_train_samples
     counts = {item["client_id"]: item.get("num_samples", 0) for item in availability_responses}
     current_app.extensions.setdefault("expected_sample_counts", {})[round_id] = {
         client_id: min(counts[client_id], limit) if limit else counts[client_id] for client_id in selected_ids
     }
-    current_app.extensions["update_submission_status"][round_id] = {
-        client_id: {"status": "waiting"}
-        for client_id in selected_ids
-    }
     attack_enabled = bool(config.get("attack_enabled", False))
     malicious_ids = set(config.get("malicious_clients", []))
     delay_ids = set(config.get("delay_clients", []))
+    current_app.extensions["update_submission_status"][round_id] = {
+        client_id: {
+            "status": "waiting",
+            "selected_at": selected_at,
+            "delayed": client_id in delay_ids,
+        }
+        for client_id in selected_ids
+    }
     progress.update(
         phase="training",
         message="선정된 클라이언트가 로컬 학습을 진행하고 있습니다.",
@@ -371,12 +385,16 @@ def start_round(round_id: int):
             ]
             selected = flask_current_app.extensions["selected_clients"].get(round_id, [])
             received = flask_current_app.extensions["round_updates"].get(round_id, {})
+            statuses = flask_current_app.extensions[
+                "update_submission_status"
+            ][round_id]
             for client_id in sorted(set(selected) - set(received)):
-                status = flask_current_app.extensions[
-                    "update_submission_status"
-                ][round_id]
-                status.setdefault(client_id, {})["status"] = "expired"
-                status[client_id]["expired_at"] = datetime.now(timezone.utc).isoformat()
+                if statuses.get(client_id, {}).get("reason") == "configured_delay":
+                    continue
+                statuses.setdefault(client_id, {}).update(
+                    status="expired",
+                    expired_at=datetime.now(timezone.utc).isoformat(),
+                )
                 client = flask_current_app.extensions["clients"].get(client_id)
                 if client:
                     try:
@@ -444,7 +462,11 @@ def start_round(round_id: int):
 
     for client in selected_clients:
         if client["client_id"] in delay_ids:
+            existing_status = current_app.extensions[
+                "update_submission_status"
+            ][round_id][client["client_id"]]
             current_app.extensions["update_submission_status"][round_id][client["client_id"]] = {
+                **existing_status,
                 "status": "excluded",
                 "reason": "configured_delay",
                 "excluded_at": datetime.now(timezone.utc).isoformat(),
@@ -632,22 +654,41 @@ def execute_result(round_id: int, payload: dict):
             is_accepted = client_id in accepted_ids
             if is_accepted:
                 status, reason = "accepted", None
+                accepted_at = datetime.now(timezone.utc).isoformat()
+                submission.update(status="accepted", accepted_at=accepted_at)
             elif submission.get("status") == "rejected":
                 status, reason = "excluded", submission.get("reason", "update_rejected")
+                accepted_at = None
             elif submission.get("status") == "excluded":
                 status, reason = "excluded", submission.get("reason", "excluded")
+                accepted_at = None
             elif submission.get("status") == "expired":
                 status, reason = "excluded", "submission_timeout"
+                accepted_at = None
             elif client_id not in available_ids:
                 status, reason = "excluded", availability.get(client_id, {}).get("reason", "unavailable")
+                accepted_at = None
             elif client_id not in selected_ids:
                 status, reason = "excluded", "not_selected"
+                accepted_at = None
             else:
                 status, reason = "excluded", "no_update_received"
+                accepted_at = None
             client_activity.append({
                 "client_id": client_id,
                 "status": status,
                 "reason": reason,
+                "selected": client_id in selected_ids,
+                "delayed": bool(
+                    submission.get(
+                        "delayed",
+                        client_id in selected_ids
+                        and client_id in payload.get("delay_clients", []),
+                    )
+                ),
+                "selected_at": submission.get("selected_at"),
+                "accepted_at": accepted_at,
+                "submission_status": submission.get("status"),
                 "malicious": bool(payload.get("attack_enabled")) and client_id in payload.get("malicious_clients", []),
                 "num_samples": update.get(
                     "num_samples",
@@ -660,6 +701,7 @@ def execute_result(round_id: int, payload: dict):
                 "training_completed_at": update.get("training_completed_at"),
                 "training_duration_seconds": update.get("training_duration_seconds"),
                 "received_at": submission.get("received_at"),
+                "submitted_at": submission.get("received_at"),
                 "excluded_at": (
                     submission.get("rejected_at")
                     or submission.get("expired_at")

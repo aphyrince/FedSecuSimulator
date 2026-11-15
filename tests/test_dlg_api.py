@@ -15,6 +15,11 @@ def test_cnn_gradient_shape_and_reconstruction():
     assert all(0 <= x <= 1 for x in result['reconstructed_image'])
     assert result['gradient_loss_before'] >= 0
     assert result['gradient_loss'] >= 0
+    repeated = reconstruct_gradient_payload(model, gradient, steps=1, seed=44)
+    assert result['reconstruction_initialization_seed'] == 44
+    assert result['reconstruction_initial_image_sha256'] == repeated[
+        'reconstruction_initial_image_sha256'
+    ]
     assert original_pixels(image) == [0.5] * 3072
 
 

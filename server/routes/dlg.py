@@ -36,7 +36,12 @@ def receive_dlg_gradient():
             result = reconstruct_gradient_payload(
                 global_model, gradient,
                 steps=int(config.get("dlg_iterations", 2)),
-                seed=int(config.get("seed", 42)) + round_id,
+                seed=int(
+                    config.get(
+                        "dlg_initialization_seed",
+                        int(config.get("seed", 42)) + round_id,
+                    )
+                ),
             )
         except (ValueError, TypeError, RuntimeError, MemoryError) as exc:
             return jsonify(error=f"Real DLG reconstruction failed: {exc}"), 400

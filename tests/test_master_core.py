@@ -137,6 +137,21 @@ class CoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlap"):
             load_datasets(manifest, TrainingSettings())
 
+    def test_manifest_rejects_client_indices_overlapping_final_test_ranges(self):
+        manifest = {
+            "source_dir": ".",
+            "clients": [
+                {
+                    "client_id": 0,
+                    "indices_by_file": [{"file": "absent", "indices": [3]}],
+                }
+            ],
+            "test_ranges": [{"file": "absent", "start": 5, "end": 6}],
+            "final_test_ranges": [{"file": "absent", "start": 2, "end": 4}],
+        }
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            load_datasets(manifest, TrainingSettings())
+
     def test_unknown_config_does_not_silently_change_experiment(self):
         for values in ({"participation_rate": 0.5}, {"training": {"lr": 0.2}}):
             with self.assertRaisesRegex(ValueError, "Unknown"):

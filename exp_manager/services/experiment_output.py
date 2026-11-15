@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,9 +37,21 @@ ROUND_LOG_FIELDS = [
 ]
 
 
+def experiment_output_directory(results_dir: Path, config: dict) -> Path:
+    experiment_id = config["experiment_id"]
+    integrated_id = config.get("integrated_experiment_id")
+    if integrated_id is None:
+        return results_dir / experiment_id
+    if not isinstance(integrated_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,100}", integrated_id
+    ):
+        raise ValueError("통합 실험 ID 형식이 올바르지 않습니다.")
+    return results_dir / integrated_id / "cases" / experiment_id
+
+
 def save_round_result(results_dir: Path, config: dict, result: dict) -> Path:
     """단일 라운드 결과를 실험 폴더의 JSON 파일로 즉시 기록한다."""
-    experiment_dir = results_dir / config["experiment_id"]
+    experiment_dir = experiment_output_directory(results_dir, config)
     rounds_dir = experiment_dir / "rounds"
     rounds_dir.mkdir(parents=True, exist_ok=True)
     round_path = rounds_dir / f"round_{int(result['round']):03d}.json"
@@ -52,7 +65,7 @@ def save_round_result(results_dir: Path, config: dict, result: dict) -> Path:
 def save_experiment_outputs(
     results_dir: Path, config: dict, round_results: list[dict]
 ):
-    experiment_dir = results_dir / config["experiment_id"]
+    experiment_dir = experiment_output_directory(results_dir, config)
     experiment_dir.mkdir(parents=True, exist_ok=True)
     log_path = experiment_dir / "rounds.csv"
     result_path = experiment_dir / "results.json"

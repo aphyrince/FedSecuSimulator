@@ -16,6 +16,11 @@ def distribute():
     payload = request.get_json(silent=True) or {}
     try:
         manager = current_app.extensions["data_manager"]
-        return jsonify(manager.distribute(payload.get("seed", 42)))
+        return jsonify(
+            manager.distribute(
+                payload.get("seed", 42),
+                payload.get("distribution", "iid"),
+            )
+        )
     except (FileNotFoundError, ValueError, OSError, TimeoutError) as exc:
         return jsonify(error=str(exc)), 400

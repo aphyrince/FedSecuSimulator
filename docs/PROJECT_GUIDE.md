@@ -223,6 +223,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/experiment/replay `
 ## Flask 없는 독립 실행
 
 `configs/fedsec.example.json`을 수정하고 프로젝트 루트에서 실행합니다.
+E01~E37 모델 탐색, 설정 단계 간 전달, 최종 다중 시드 비교 절차는
+[독립 연합학습 및 모델 실험 가이드](./STANDALONE_EXPERIMENTS.md)를 참고하세요.
 
 ```powershell
 .\.venv\Scripts\python.exe -m fedsec --config configs/fedsec.example.json

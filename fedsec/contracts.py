@@ -1,6 +1,6 @@
 """1번 담당 함수 사이에서 전달하는 Tensor 자료형. HTTP/JSON 필드는 포함하지 않는다."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeAlias
 import torch
 
@@ -28,3 +28,4 @@ class EvaluationResult:
     loss: float
     num_samples: int
     correct_predictions: int
+    per_class: list[dict] = field(default_factory=list)

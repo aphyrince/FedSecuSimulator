@@ -1,0 +1,157 @@
+{
+  "source_dir": "data/raw",
+  "clients": [
+    {
+      "client_id": 0,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_1",
+          "start": 0,
+          "end": 4500
+        }
+      ]
+    },
+    {
+      "client_id": 1,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_1",
+          "start": 5000,
+          "end": 9500
+        }
+      ]
+    },
+    {
+      "client_id": 2,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_2",
+          "start": 0,
+          "end": 4500
+        }
+      ]
+    },
+    {
+      "client_id": 3,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_2",
+          "start": 5000,
+          "end": 9500
+        }
+      ]
+    },
+    {
+      "client_id": 4,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_3",
+          "start": 0,
+          "end": 4500
+        }
+      ]
+    },
+    {
+      "client_id": 5,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_3",
+          "start": 5000,
+          "end": 9500
+        }
+      ]
+    },
+    {
+      "client_id": 6,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_4",
+          "start": 0,
+          "end": 4500
+        }
+      ]
+    },
+    {
+      "client_id": 7,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_4",
+          "start": 5000,
+          "end": 9500
+        }
+      ]
+    },
+    {
+      "client_id": 8,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_5",
+          "start": 0,
+          "end": 4500
+        }
+      ]
+    },
+    {
+      "client_id": 9,
+      "ranges": [
+        {
+          "file": "cifar-10-batches-py/data_batch_5",
+          "start": 5000,
+          "end": 9500
+        }
+      ]
+    }
+  ],
+  "test_ranges": [
+    {
+      "file": "cifar-10-batches-py/data_batch_1",
+      "start": 4500,
+      "end": 5000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_1",
+      "start": 9500,
+      "end": 10000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_2",
+      "start": 4500,
+      "end": 5000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_2",
+      "start": 9500,
+      "end": 10000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_3",
+      "start": 4500,
+      "end": 5000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_3",
+      "start": 9500,
+      "end": 10000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_4",
+      "start": 4500,
+      "end": 5000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_4",
+      "start": 9500,
+      "end": 10000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_5",
+      "start": 4500,
+      "end": 5000
+    },
+    {
+      "file": "cifar-10-batches-py/data_batch_5",
+      "start": 9500,
+      "end": 10000
+    }
+  ]
+}

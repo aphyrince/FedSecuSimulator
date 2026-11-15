@@ -7,6 +7,7 @@ import random
 import numpy as np
 import torch
 
+from fedsec.augmentation import AUGMENTATIONS
 from fedsec.validation import finite_number, positive_int
 from fedsec.model import model_config as validate_model_config
 
@@ -24,6 +25,7 @@ class TrainingSettings:
     torch_threads: int = 1
     max_train_samples: int | None = None
     max_test_samples: int | None = None
+    augmentation: str = "none"
 
     def __post_init__(self):
         for key in ("local_epochs", "batch_size", "torch_threads"):
@@ -40,13 +42,18 @@ class TrainingSettings:
             raise ValueError("Unsupported optimizer or device")
         if self.optimizer == "adam" and self.momentum != 0:
             raise ValueError("momentum is only supported by SGD")
+        if self.augmentation not in AUGMENTATIONS:
+            raise ValueError("Unsupported data augmentation")
 
     @classmethod
     def from_dict(cls, values: dict):
         return cls(**{key: values[key] for key in cls.__dataclass_fields__ if key in values})
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        values = asdict(self)
+        if self.augmentation == "none":
+            del values["augmentation"]
+        return values
 
 
 @dataclass(frozen=True)

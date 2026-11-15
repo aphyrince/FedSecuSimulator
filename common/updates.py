@@ -3,7 +3,8 @@
 from copy import deepcopy
 import torch
 
-from common.model import MODEL_FORMAT, decode_weights, encode_weights, positive_int, weights_hash, weights_norm
+from common.model import decode_weights, encode_weights, positive_int, weights_hash, weights_norm
+from fedsec.model import SUPPORTED_ARCHITECTURES
 
 
 def update_delta(global_model: dict, update: dict) -> dict:
@@ -13,7 +14,8 @@ def update_delta(global_model: dict, update: dict) -> dict:
         raise ValueError("Invalid update")
     base = decode_weights(global_model["weights"])
     local = update.get("local_model", {})
-    if global_model.get("architecture") == MODEL_FORMAT:
+    tensor_model = global_model.get("architecture") in SUPPORTED_ARCHITECTURES
+    if tensor_model:
         positive_int(update.get("base_model_version"), "base_model_version", 0)
         if update.get("base_model_version") != global_model["model_version"]:
             raise ValueError("Update belongs to a different model version")
@@ -27,7 +29,7 @@ def update_delta(global_model: dict, update: dict) -> dict:
     final = decode_weights(local.get("weights"), base)
     delta = {key: final[key] - base[key] for key in base}
     submitted = update.get("update", {}).get("values")
-    if global_model.get("architecture") == MODEL_FORMAT and submitted is None:
+    if tensor_model and submitted is None:
         raise ValueError("Missing tensor update.values")
     if submitted is not None:
         submitted = decode_weights(submitted, base)

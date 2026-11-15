@@ -152,7 +152,16 @@ def load_datasets(manifest: dict, settings) -> tuple[dict[int, Dataset], Dataset
             for segment in item.get("indices_by_file", [])
         ]
         for item in clients
-    ] + [[{**segment, "selection": "range"} for segment in manifest["test_ranges"]]]
+    ] + [
+        [{**segment, "selection": "range"} for segment in manifest["test_ranges"]]
+    ]
+    if "final_test_ranges" in manifest:
+        selections.append(
+            [
+                {**segment, "selection": "range"}
+                for segment in manifest["final_test_ranges"]
+            ]
+        )
     for selection in selections:
         for segment in selection:
             path = (root / segment["file"]).resolve()

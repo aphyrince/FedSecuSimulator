@@ -511,6 +511,7 @@ function applyExperimentTemplate(templateName) {
         document.getElementById('attack-scale').value = config.attack_scale ?? -5;
         document.getElementById('malicious').value = config.malicious_clients.join(',');
         buildRoundEditor(config.round_configs || []);
+        setLinkedSharedSettings(config);
         resetContinuousCases();
         resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
         updateConditionalSettings();

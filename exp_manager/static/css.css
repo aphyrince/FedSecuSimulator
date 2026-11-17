@@ -309,6 +309,44 @@ input[type="checkbox"] {
     gap: 10px;
     margin-top: 12px;
 }
+.linked-shared-settings {
+    margin-top: 12px;
+    padding: 16px;
+    border: 1px solid #dce7f7;
+    border-radius: 12px;
+    background: #f5f8fe;
+}
+.linked-shared-settings h4,
+.linked-shared-settings p { margin: 0; }
+.linked-shared-settings p {
+    margin-top: 4px;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.linked-shared-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}
+.linked-shared-settings-grid label {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 650;
+}
+.linked-shared-settings-grid input,
+.linked-shared-settings-grid select {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 7px 9px;
+    font-size: 13px;
+}
 #continuous-linked-experiments .continuous-case-card {
     display: grid;
     grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.3fr) minmax(0, 1.6fr) max-content;
@@ -316,7 +354,7 @@ input[type="checkbox"] {
     gap: 10px;
 }
 #continuous-linked-experiments .continuous-case-fields {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
 }
 #continuous-linked-experiments .continuous-security-settings {
@@ -333,6 +371,9 @@ input[type="checkbox"] {
     border-top: 1px solid #edf1f7;
 }
 @media (max-width: 1100px) {
+    .linked-shared-settings-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
     #continuous-linked-experiments .continuous-case-card {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -342,6 +383,9 @@ input[type="checkbox"] {
     }
 }
 @media (max-width: 820px) {
+    .linked-shared-settings-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     #continuous-linked-experiments .continuous-case-card {
         display: flex;
         flex-direction: column;
@@ -1003,6 +1047,7 @@ pre {
     .continuous-dlg-input-grid,
     .continuous-dlg-options,
     .continuous-dlg-scenarios { grid-template-columns: minmax(0, 1fr); }
+    .linked-shared-settings-grid { grid-template-columns: minmax(0, 1fr); }
     .experiment-tab-panel { min-height: 0; }
     .data-distribution-panel {
         align-items: stretch;

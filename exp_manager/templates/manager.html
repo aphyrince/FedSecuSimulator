@@ -547,7 +547,7 @@
           <div class="continuous-heading">
             <div>
               <h4>연속 연합학습 설정 (24개)</h4>
-              <p>각 환경·보안 조합의 학습 및 공격·방어 설정을 이 탭에서 직접 편집할 수 있습니다.</p>
+              <p>공통 학습 설정은 한 번 입력해 24개 조합에 적용하고, 환경·보안 설정은 각 카드에서 조정합니다.</p>
             </div>
             <button
               id="reset-continuous-linked-button"
@@ -558,6 +558,29 @@
               기본 24개 조합으로 복원
             </button>
           </div>
+          <section class="linked-shared-settings" aria-labelledby="linked-shared-settings-title">
+            <h4 id="linked-shared-settings-title">공통 연합학습 설정</h4>
+            <p>아래 값은 24개 실험 모두에 동일하게 적용됩니다. 환경·보안 조합별 차이는 각 카드의 환경·공격·방어 설정에서 조정합니다.</p>
+            <div class="linked-shared-settings-grid">
+              <label>라운드 수<input id="linked-shared-rounds" type="number" min="1" value="10"></label>
+              <label>참여율<input id="linked-shared-participation" type="number" min="0.01" max="1" step="0.05" value="1"></label>
+              <label>시드<input id="linked-shared-seed" type="number" min="0" value="42"></label>
+              <label>로컬 epoch<input id="linked-shared-local-epochs" type="number" min="1" value="2"></label>
+              <label>배치 크기<input id="linked-shared-batch-size" type="number" min="1" value="32"></label>
+              <label>학습률<input id="linked-shared-learning-rate" type="number" min="0.000001" step="any" value="0.001"></label>
+              <label>연산 장치
+                <select id="linked-shared-device">
+                  <option value="cpu" selected>CPU</option>
+                  <option value="cuda">CUDA</option>
+                  <option value="auto">자동</option>
+                </select>
+              </label>
+              <label>라운드 제출 제한 시간(초)<input id="linked-shared-round-timeout" type="number" min="1" value="900"></label>
+              <label>클라이언트별 학습 표본 제한<input id="linked-shared-max-train-samples" type="number" min="1" placeholder="비우면 전체"></label>
+              <label>평가 표본 제한<input id="linked-shared-max-test-samples" type="number" min="1" placeholder="비우면 전체"></label>
+              <label>악성 클라이언트 후보<input id="linked-shared-malicious-clients" value="0,1" placeholder="쉼표로 구분, 예: 0,1"></label>
+            </div>
+          </section>
           <div id="continuous-linked-experiments" class="continuous-case-grid"></div>
           <p id="continuous-linked-fl-status" class="continuous-dlg-help">
             연속 연합학습 설정 24개가 준비되었습니다. 이 중 정상 시나리오 4개의 모델만 DLG에 사용됩니다.

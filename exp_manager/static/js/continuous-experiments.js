@@ -101,26 +101,73 @@ function continuousDefaults() {
   };
 }
 
-function renderContinuousCaseSettings(defaults) {
+function setLinkedSharedSettings(config) {
+  const values = {
+    'linked-shared-rounds': config.num_rounds,
+    'linked-shared-participation': config.participation_rate,
+    'linked-shared-seed': config.seed,
+    'linked-shared-local-epochs': config.local_epochs,
+    'linked-shared-batch-size': config.batch_size,
+    'linked-shared-learning-rate': config.learning_rate,
+    'linked-shared-device': config.device,
+    'linked-shared-round-timeout': config.round_timeout,
+    'linked-shared-max-train-samples': config.max_train_samples ?? '',
+    'linked-shared-max-test-samples': config.max_test_samples ?? '',
+    'linked-shared-malicious-clients': (config.malicious_clients || []).join(','),
+  };
+  for (const [id, value] of Object.entries(values)) {
+    document.getElementById(id).value = value;
+  }
+}
+
+function readLinkedSharedSettings() {
+  const value = (id) => document.getElementById(`linked-shared-${id}`).value;
+  const optionalNumber = (id) => {
+    const raw = value(id);
+    return raw === '' ? null : Number(raw);
+  };
+  return {
+    num_rounds: Number(value('rounds')),
+    participation_rate: Number(value('participation')),
+    seed: Number(value('seed')),
+    local_epochs: Number(value('local-epochs')),
+    batch_size: Number(value('batch-size')),
+    learning_rate: Number(value('learning-rate')),
+    device: value('device'),
+    round_timeout: Number(value('round-timeout')),
+    max_train_samples: optionalNumber('max-train-samples'),
+    max_test_samples: optionalNumber('max-test-samples'),
+    malicious_clients: value('malicious-clients')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map(Number),
+  };
+}
+
+function renderContinuousCaseSettings(defaults, linked = false) {
+  const commonFields = linked ? '' : `
+      <label>시드<input class="continuous-seed" type="number" min="0" value="${defaults.seed}"></label>
+      <label>로컬 epoch<input class="continuous-local-epochs" type="number" min="1" value="${defaults.localEpochs}"></label>
+      <label>배치 크기<input class="continuous-batch-size" type="number" min="1" value="${defaults.batchSize}"></label>
+      <label>학습률<input class="continuous-learning-rate" type="number" min="0.000001" step="any" value="${defaults.learningRate}"></label>
+      <label>연산 장치
+        <select class="continuous-device">
+          <option value="cpu" ${defaults.device === 'cpu' ? 'selected' : ''}>CPU</option>
+          <option value="cuda" ${defaults.device === 'cuda' ? 'selected' : ''}>CUDA</option>
+          <option value="auto" ${defaults.device === 'auto' ? 'selected' : ''}>자동</option>
+        </select>
+      </label>
+      <label>라운드 제출 제한 시간(초)<input class="continuous-round-timeout" type="number" min="1" value="${defaults.roundTimeout}"></label>
+      <label>클라이언트별 학습 표본 제한<input class="continuous-max-train-samples" type="number" min="1" placeholder="비우면 전체" value="${defaults.maxTrainSamples}"></label>
+      <label>평가 표본 제한<input class="continuous-max-test-samples" type="number" min="1" placeholder="비우면 전체" value="${defaults.maxTestSamples}"></label>
+      <label>악성 클라이언트 후보<input class="continuous-malicious-clients" value="${defaults.maliciousClients}" placeholder="쉼표로 구분, 예: 0,1"></label>
+  `;
   return `
     <details class="continuous-case-settings">
       <summary>학습·실행 상세 설정</summary>
       <div class="continuous-case-settings-grid">
-        <label>시드<input class="continuous-seed" type="number" min="0" value="${defaults.seed}"></label>
-        <label>로컬 epoch<input class="continuous-local-epochs" type="number" min="1" value="${defaults.localEpochs}"></label>
-        <label>배치 크기<input class="continuous-batch-size" type="number" min="1" value="${defaults.batchSize}"></label>
-        <label>학습률<input class="continuous-learning-rate" type="number" min="0.000001" step="any" value="${defaults.learningRate}"></label>
-        <label>연산 장치
-          <select class="continuous-device">
-            <option value="cpu" ${defaults.device === 'cpu' ? 'selected' : ''}>CPU</option>
-            <option value="cuda" ${defaults.device === 'cuda' ? 'selected' : ''}>CUDA</option>
-            <option value="auto" ${defaults.device === 'auto' ? 'selected' : ''}>자동</option>
-          </select>
-        </label>
-        <label>라운드 제출 제한 시간(초)<input class="continuous-round-timeout" type="number" min="1" value="${defaults.roundTimeout}"></label>
-        <label>클라이언트별 학습 표본 제한<input class="continuous-max-train-samples" type="number" min="1" placeholder="비우면 전체" value="${defaults.maxTrainSamples}"></label>
-        <label>평가 표본 제한<input class="continuous-max-test-samples" type="number" min="1" placeholder="비우면 전체" value="${defaults.maxTestSamples}"></label>
-        <label>악성 클라이언트 후보<input class="continuous-malicious-clients" value="${defaults.maliciousClients}" placeholder="쉼표로 구분, 예: 0,1"></label>
+        ${commonFields}
       </div>
       <label class="continuous-custom-rounds-toggle">
         <input class="continuous-custom-rounds" type="checkbox">
@@ -135,7 +182,10 @@ function resetContinuousCases(
   containerId = 'continuous-experiments',
   statusId = 'continuous-experiment-status',
 ) {
-  const rounds = Number(document.getElementById('rounds').value) || 1;
+  const linked = containerId === 'continuous-linked-experiments';
+  const rounds = linked
+    ? Number(document.getElementById('linked-shared-rounds').value) || 1
+    : Number(document.getElementById('rounds').value) || 1;
   const attackScaleValue = document.getElementById('attack-scale').value;
   const attackScale = attackScaleValue === '' ? -5 : Number(attackScaleValue);
   const defense = document.getElementById('defense').value || 'norm_clipping';
@@ -154,8 +204,10 @@ function resetContinuousCases(
           </div>
         </div>
         <div class="continuous-case-fields">
-          <label>라운드<input class="continuous-rounds" type="number" min="1" value="${rounds}"></label>
-          <label>참여율<input class="continuous-participation" type="number" min="0.01" max="1" step="0.05" value="${environment.participation}"></label>
+            ${linked ? '' : `
+            <label>라운드<input class="continuous-rounds" type="number" min="1" value="${rounds}"></label>
+            <label>참여율<input class="continuous-participation" type="number" min="0.01" max="1" step="0.05" value="${environment.participation}"></label>
+            `}
           <label>지연 클라이언트<input class="continuous-delays" value="${environment.delays.join(',')}" placeholder="예: 2,5,8"></label>
           <label>데이터 분포
           <select class="continuous-distribution">
@@ -181,7 +233,7 @@ function resetContinuousCases(
           </select>
           </label>
         </div>
-        ${renderContinuousCaseSettings(defaults)}
+        ${renderContinuousCaseSettings(defaults, linked)}
       </article>
     `),
   );
@@ -226,7 +278,15 @@ function updateContinuousRoundEditor(row) {
   }
 
   const previous = readContinuousRoundConfigs(row);
-  const count = Math.max(1, Number(row.querySelector('.continuous-rounds').value) || 1);
+  const linked = row.closest('#continuous-linked-experiments') !== null;
+  const count = Math.max(
+    1,
+    Number(
+      linked
+        ? document.getElementById('linked-shared-rounds').value
+        : row.querySelector('.continuous-rounds').value,
+    ) || 1,
+  );
   const defaultDelayClients = row.querySelector('.continuous-delays').value
     .split(',')
     .map((value) => value.trim())
@@ -241,7 +301,11 @@ function updateContinuousRoundEditor(row) {
         ${Array.from({ length: count }, (_, index) => {
           const saved = previous[index] || {};
           const participation = saved.participation_rate ??
-            Number(row.querySelector('.continuous-participation').value);
+            Number(
+              linked
+                ? document.getElementById('linked-shared-participation').value
+                : row.querySelector('.continuous-participation').value,
+            );
           const attack = saved.attack_enabled ??
             row.querySelector('.continuous-attack').checked;
           const delays = saved.delay_clients || defaultDelayClients;
@@ -286,6 +350,8 @@ function updateContinuousRoundEditor(row) {
 }
 
 function readContinuousCases(containerId = 'continuous-experiments') {
+  const linked = containerId === 'continuous-linked-experiments';
+  const shared = linked ? readLinkedSharedSettings() : null;
   return Array.from(
     document.getElementById(containerId).querySelectorAll(':scope > .continuous-case-card'),
   ).map((row) => {
@@ -293,17 +359,21 @@ function readContinuousCases(containerId = 'continuous-experiments') {
       const value = row.querySelector(selector).value;
       return value === '' ? null : Number(value);
     };
-    const maliciousClients = row.querySelector('.continuous-malicious-clients').value
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map(Number);
+    const maliciousClients = linked
+      ? shared.malicious_clients
+      : row.querySelector('.continuous-malicious-clients').value
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map(Number);
     return {
       name: row.querySelector('.continuous-name').value.trim(),
       environment_template: row.dataset.environment,
       security_scenario: row.dataset.security,
-      num_rounds: Number(row.querySelector('.continuous-rounds').value),
-      participation_rate: Number(row.querySelector('.continuous-participation').value),
+      num_rounds: linked ? shared.num_rounds : Number(row.querySelector('.continuous-rounds').value),
+      participation_rate: linked
+        ? shared.participation_rate
+        : Number(row.querySelector('.continuous-participation').value),
       delay_clients: row.querySelector('.continuous-delays').value
         .split(',')
         .map((value) => value.trim())
@@ -314,14 +384,14 @@ function readContinuousCases(containerId = 'continuous-experiments') {
       attack_scale: Number(row.querySelector('.continuous-attack-scale').value),
       defense_enabled: row.querySelector('.continuous-defense-enabled').checked,
       defense: row.querySelector('.continuous-defense').value,
-      seed: Number(row.querySelector('.continuous-seed').value),
-      local_epochs: Number(row.querySelector('.continuous-local-epochs').value),
-      batch_size: Number(row.querySelector('.continuous-batch-size').value),
-      learning_rate: Number(row.querySelector('.continuous-learning-rate').value),
-      device: row.querySelector('.continuous-device').value,
-      round_timeout: Number(row.querySelector('.continuous-round-timeout').value),
-      max_train_samples: optionalNumber('.continuous-max-train-samples'),
-      max_test_samples: optionalNumber('.continuous-max-test-samples'),
+      seed: linked ? shared.seed : Number(row.querySelector('.continuous-seed').value),
+      local_epochs: linked ? shared.local_epochs : Number(row.querySelector('.continuous-local-epochs').value),
+      batch_size: linked ? shared.batch_size : Number(row.querySelector('.continuous-batch-size').value),
+      learning_rate: linked ? shared.learning_rate : Number(row.querySelector('.continuous-learning-rate').value),
+      device: linked ? shared.device : row.querySelector('.continuous-device').value,
+      round_timeout: linked ? shared.round_timeout : Number(row.querySelector('.continuous-round-timeout').value),
+      max_train_samples: linked ? shared.max_train_samples : optionalNumber('.continuous-max-train-samples'),
+      max_test_samples: linked ? shared.max_test_samples : optionalNumber('.continuous-max-test-samples'),
       malicious_clients: maliciousClients,
       round_configs: readContinuousRoundConfigs(row),
     };
@@ -446,7 +516,7 @@ function renderContinuousExperimentStatus(batch) {
     continuousLinkedRunning = active;
     document.getElementById('reset-continuous-linked-button').disabled = active;
     document.querySelectorAll(
-      '#continuous-linked-experiments input, #continuous-linked-experiments select',
+      '#continuous-linked-experiments input, #continuous-linked-experiments select, .linked-shared-settings input, .linked-shared-settings select',
     ).forEach((input) => {
       input.disabled = active;
     });
@@ -920,6 +990,13 @@ document.getElementById('continuous-linked-experiments').addEventListener(
   'change',
   handleContinuousCaseChange,
 );
+document.getElementById('linked-shared-rounds').addEventListener('change', () => {
+  document.querySelectorAll(
+    '#continuous-linked-experiments > .continuous-case-card .continuous-custom-rounds:checked',
+  ).forEach((input) => {
+    updateContinuousRoundEditor(input.closest('.continuous-case-card'));
+  });
+});
 
 document.getElementById('continuous-results-manifest').addEventListener(
   'change',

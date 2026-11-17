@@ -218,6 +218,20 @@ def test_linked_api_and_results_summary_expose_a_single_dashboard():
         assert 'id="continuous-linked-experiments"' in page
         assert 'id="start-continuous-linked-button"' in page
         assert 'id="continuous-results-rows"' in page
+        for setting_id in (
+            "rounds",
+            "participation",
+            "seed",
+            "local-epochs",
+            "batch-size",
+            "learning-rate",
+            "device",
+            "round-timeout",
+            "max-train-samples",
+            "max-test-samples",
+            "malicious-clients",
+        ):
+            assert f'id="linked-shared-{setting_id}"' in page
 
         manager.state["continuous_experiment"] = None
         batch_dir = Path(temporary) / "integrated-summary"

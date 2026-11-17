@@ -327,7 +327,8 @@
         </section>
 
         <div class="experiment-actions">
-          <button onclick="saveExperimentConfig()">설정 저장</button>
+          <button id="save-config-button" type="button" onclick="saveExperimentConfig()">설정 저장</button>
+          <p id="config-save-status" class="config-save-status" role="status" aria-live="polite"></p>
           <button
             id="start-experiment-button"
             class="start"

@@ -35,6 +35,12 @@ class ComparisonResult:
     comparison: dict
 
 
+@dataclass(frozen=True)
+class RoundState:
+    weights: TensorState
+    records: list[dict]
+
+
 def _dataset_view(dataset: Dataset, limit: int | None) -> Dataset:
     fingerprint = getattr(dataset, "fingerprint", None)
     if not isinstance(fingerprint, str) or not fingerprint or not len(dataset):
@@ -59,7 +65,8 @@ def _datasets(config, client_datasets, test_dataset):
 def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int, Dataset],
                            test_dataset: Dataset, *, attack: bool = False,
                            experiment_id: str = "standalone", initial_weights: TensorState | None = None,
-                           on_round: Callable[[dict], None] | None = None) -> ExperimentResult:
+                           on_round: Callable[[dict], None] | None = None, resume: RoundState | None = None,
+                           save_round: Callable[[RoundState], None] | None = None) -> ExperimentResult:
     """같은 전역 모델로 모든 클라이언트 학습 → 선택적 협력 공격 → FedAvg → 평가를 반복한다.
 
     매 라운드 모든 클라이언트가 참여한다. 데이터 분할은 호출자가 제공한다.
@@ -73,8 +80,22 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
     if initial_weights is not None:
         model.load_state_dict(copy_state(initial_weights, model.state_dict()))
     initial_hash = state_hash(model.state_dict())
+    training_datasets = {str(key): {"fingerprint": dataset.fingerprint, "num_samples": len(dataset)}
+                         for key, dataset in clients.items()}
     records = []
-    for round_id in range(1, config.num_rounds + 1):
+    if resume is not None:
+        records = deepcopy(resume.records)
+        if not 1 <= len(records) <= config.num_rounds or any(
+            record["round"] != number or record["experiment_id"] != experiment_id
+            or record["initial_model_hash"] != initial_hash or record["attack_enabled"] != attack
+            or record["training_config"] != config.training.to_dict()
+            or record["training_datasets"] != training_datasets
+            or record["evaluation"]["dataset_fingerprint"] != test_dataset.fingerprint
+            for number, record in enumerate(records, start=1)
+        ):
+            raise ValueError("체크포인트의 실험 설정이나 데이터가 현재 실행과 다릅니다.")
+        model.load_state_dict(copy_state(resume.weights, model.state_dict()))
+    for round_id in range(len(records) + 1, config.num_rounds + 1):
         updates, training_metrics = [], {}
         for client_id, dataset in clients.items():
             trained = train_local_model(model, dataset, config.training, seed=config.seed,
@@ -89,12 +110,12 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
             malicious_delta = collude_updates(clean, config.attack_scale)
             updates = [ClientUpdate(item.client_id, item.num_samples, copy_state(malicious_delta))
                        if item.client_id in config.malicious_clients else item for item in updates]
-        model.load_state_dict(aggregate_fedavg(copy_state(model.state_dict()), updates))
+        weights = aggregate_fedavg(copy_state(model.state_dict()), updates)
+        model.load_state_dict(weights)
         evaluation = evaluate_global_model(model, test_dataset, config.training, seed=config.seed)
         record = {"experiment_id": experiment_id, "round": round_id,
                   "initial_model_hash": initial_hash, "training_config": config.training.to_dict(),
-                  "training_datasets": {str(key): {"fingerprint": dataset.fingerprint, "num_samples": len(dataset)}
-                                        for key, dataset in clients.items()},
+                  "training_datasets": deepcopy(training_datasets),
                   "selected_clients": list(clients), "accepted_clients": list(clients),
                   "accuracy": evaluation.accuracy, "loss": evaluation.loss,
                   "evaluation": {"dataset_fingerprint": test_dataset.fingerprint,
@@ -103,6 +124,8 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
                   "attack_scale": config.attack_scale, "malicious_clients": list(config.malicious_clients) if attack else [],
                   "defense_enabled": False, "defense": "none", "training_metrics": training_metrics}
         records.append(record)
+        if save_round is not None:
+            save_round(RoundState(weights, deepcopy(records)))
         if on_round:
             on_round(deepcopy(record))
     return ExperimentResult({**config.to_dict(), "experiment_id": experiment_id, "attack_enabled": attack},

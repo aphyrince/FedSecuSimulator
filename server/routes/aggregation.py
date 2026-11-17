@@ -563,24 +563,21 @@ def start_round(round_id: int):
     for client in accepted_clients:
         client_id = client["client_id"]
         is_malicious = attack_enabled and client_id in malicious_ids
-        try:
-            local_response = _post_json(
-                f"{client['url']}/api/round/execute",
-                {
-                    "round": round_id,
-                    "malicious": is_malicious,
-                    "attack_enabled": attack_enabled,
-                },
-            )
-        except (OSError, ValueError):
-            record_exclusion(client_id, "update_generation_failed")
-            current_app.logger.warning(
-                "Client update generation failed: client_id=%s", client_id
-            )
-            continue
-
         if is_malicious:
-            malicious_local_updates[client_id] = local_response
+            try:
+                malicious_local_updates[client_id] = _post_json(
+                    f"{client['url']}/api/round/execute",
+                    {
+                        "round": round_id,
+                        "malicious": True,
+                        "attack_enabled": True,
+                    },
+                )
+            except (OSError, ValueError):
+                record_exclusion(client_id, "update_generation_failed")
+                current_app.logger.warning(
+                    "Client update generation failed: client_id=%s", client_id
+                )
             continue
 
         try:

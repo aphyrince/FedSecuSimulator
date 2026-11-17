@@ -133,6 +133,7 @@ class ApiTests(unittest.TestCase):
     def test_full_normal_and_attack_rounds_through_flask_with_stubs(self):
         starts = []
         submission_before_all_training_finished = []
+        client_routes = {False: [], True: []}
         outcomes = {}
         for attack in (False, True):
             server = create_server_app("127.0.0.1", 5000)
@@ -178,6 +179,8 @@ class ApiTests(unittest.TestCase):
 
             def dispatch(url, payload, timeout=3.0):
                 parsed = urlsplit(url)
+                if parsed.path in ("/api/round/execute", "/api/round/submit"):
+                    client_routes[attack].append((parsed.netloc, parsed.path))
                 if parsed.path == "/api/model/global":
                     global_delivery_barrier.wait(timeout=5)
                 target = server.test_client() if parsed.netloc == "server" else clients[parsed.netloc]
@@ -200,6 +203,19 @@ class ApiTests(unittest.TestCase):
                 response = api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"})
             self.assertEqual(response.status_code, 200, response.get_json())
             result = response.get_json()
+            expected_execute_clients = [0, 1] if attack else []
+            observed_execute_clients = sorted(
+                int(host.removeprefix("client"))
+                for host, path in client_routes[attack]
+                if path == "/api/round/execute"
+            )
+            observed_submit_clients = sorted(
+                int(host.removeprefix("client"))
+                for host, path in client_routes[attack]
+                if path == "/api/round/submit"
+            )
+            self.assertEqual(observed_execute_clients, expected_execute_clients)
+            self.assertEqual(observed_submit_clients, [0, 1, 2])
             self.assertEqual(result["accepted_clients"], [0, 1, 2])
             self.assertEqual(result["attack_applied"], attack)
             client_values = {

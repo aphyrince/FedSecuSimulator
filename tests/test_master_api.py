@@ -135,6 +135,7 @@ class ApiTests(unittest.TestCase):
         starts = []
         submission_before_all_training_finished = []
         client_routes = {False: [], True: []}
+        direct_peer_exchanges = {False: [], True: []}
         compact_submissions = {False: 0, True: 0}
         outcomes = {}
         for attack in (False, True):
@@ -148,6 +149,14 @@ class ApiTests(unittest.TestCase):
                 app.extensions["client_state"].results_dir = self.root
                 app.extensions["client_state"].set_dataset_range({"source_dir": "unused", "ranges": [{"file": "fake", "start": 0, "end": count}]})
                 clients[f"client{client_id}"] = app.test_client()
+            if attack:
+                for client_id, peer_id in ((0, 1), (1, 0)):
+                    client_app = clients[f"client{client_id}"].application
+                    client_app.extensions["client_state"].set_malicious_peers(
+                        1,
+                        [{"client_id": peer_id, "url": f"http://client{peer_id}"}],
+                        -5.0,
+                    )
             server.extensions["clients"] = {i: {"client_id": i, "url": f"http://client{i}"} for i in range(3)}
             server.extensions["dataset_range"] = {"source_dir": "unused", "ranges": [{"file": "fake", "start": 0, "end": 10}]}
             config = {"experiment_id": "attack" if attack else "normal", "round": 1, "seed": 42,
@@ -183,12 +192,20 @@ class ApiTests(unittest.TestCase):
                 parsed = urlsplit(url)
                 if parsed.path in ("/api/round/execute", "/api/round/submit"):
                     client_routes[attack].append((parsed.netloc, parsed.path))
+                if parsed.path == "/api/round/update-share":
+                    direct_peer_exchanges[attack].append(
+                        (payload.get("sender_id"), parsed.netloc)
+                    )
                 if parsed.path == "/api/model/global":
                     global_delivery_barrier.wait(timeout=5)
                 target = server.test_client() if parsed.netloc == "server" else clients[parsed.netloc]
                 if compact:
-                    self.assertEqual(parsed.path, "/api/rounds/1/updates")
-                    compact_submissions[attack] += 1
+                    self.assertIn(
+                        parsed.path,
+                        ("/api/rounds/1/updates", "/api/round/update-share"),
+                    )
+                    if parsed.path == "/api/rounds/1/updates":
+                        compact_submissions[attack] += 1
                     body = json.dumps(
                         payload,
                         separators=(",", ":"),
@@ -218,7 +235,7 @@ class ApiTests(unittest.TestCase):
                 response = api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"})
             self.assertEqual(response.status_code, 200, response.get_json())
             result = response.get_json()
-            expected_execute_clients = [0, 1] if attack else []
+            expected_execute_clients = []
             observed_execute_clients = sorted(
                 int(host.removeprefix("client"))
                 for host, path in client_routes[attack]
@@ -232,6 +249,10 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(observed_execute_clients, expected_execute_clients)
             self.assertEqual(observed_submit_clients, [0, 1, 2])
             self.assertEqual(compact_submissions[attack], 3)
+            self.assertEqual(
+                sorted(direct_peer_exchanges[attack]),
+                [(0, "client1"), (1, "client0")] if attack else [],
+            )
             self.assertEqual(result["accepted_clients"], [0, 1, 2])
             self.assertEqual(result["attack_applied"], attack)
             client_values = {
@@ -543,6 +564,12 @@ class ApiTests(unittest.TestCase):
                     for call in manager.rest_client.post_json.call_args_list
                 )
             )
+            peers_by_url = {
+                call.args[0]: call.args[1]["peers"]
+                for call in manager.rest_client.post_json.call_args_list
+            }
+            self.assertEqual(peers_by_url["http://client2/api/round/malicious-peers"][0]["client_id"], 7)
+            self.assertEqual(peers_by_url["http://client7/api/round/malicious-peers"][0]["client_id"], 2)
         with self.assertRaises(ValueError):
             manager.update_config({"learning_rate": -1})
         with self.assertRaises(ValueError):

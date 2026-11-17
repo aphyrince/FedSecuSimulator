@@ -115,8 +115,51 @@ def submit_round_update():
     except (ValueError, KeyError) as error:
         return jsonify(error=str(error)), 409
 
-    if isinstance(payload.get("colluded_update"), dict):
-        update = payload["colluded_update"]
+    if payload.get("malicious") and payload.get("attack_enabled"):
+        peers = state.malicious_peers.get(round_id, [])
+        if not peers:
+            return jsonify(error="Malicious peer information is missing"), 409
+
+        peer_updates = []
+        for peer in peers:
+            peer_id = peer.get("client_id")
+            peer_url = peer.get("url")
+            if (
+                type(peer_id) is not int
+                or peer_id == current_app.config["CLIENT_ID"]
+                or not isinstance(peer_url, str)
+                or not peer_url
+            ):
+                return jsonify(error="Invalid malicious peer information"), 409
+            exchange = post_json(
+                f"{peer_url.rstrip('/')}/api/round/update-share",
+                {
+                    "round": round_id,
+                    "sender_id": current_app.config["CLIENT_ID"],
+                    "update": update,
+                },
+                timeout=60.0,
+                compact=True,
+            )
+            peer_update = exchange.get("peer_update")
+            if peer_update is not None:
+                if (
+                    peer_update.get("client_id") != peer_id
+                    or peer_update.get("round") != round_id
+                ):
+                    return jsonify(error="Malicious peer update identity mismatch"), 409
+                peer_updates.append(peer_update)
+
+        attack_scale = state.attack_scale_by_round.get(round_id, -5.0)
+        try:
+            update = collude_updates(
+                state.global_model,
+                update,
+                peer_updates,
+                attack_scale,
+            )
+        except (ValueError, TypeError, KeyError) as error:
+            return jsonify(error=str(error)), 400
 
     if (
         update.get("client_id") != current_app.config["CLIENT_ID"]
@@ -439,22 +482,46 @@ def receive_shared_malicious_update():
     sender_id = payload.get("sender_id")
     update = payload.get("update")
 
-    if sender_id is None or not isinstance(update, dict):
+    if type(sender_id) is not int or not isinstance(update, dict):
         return jsonify(
             error="sender_id and update are required"
         ), 400
 
-    current_app.extensions["client_state"].receive_malicious_update(
+    state = current_app.extensions["client_state"]
+    allowed_peers = {
+        peer.get("client_id")
+        for peer in state.malicious_peers.get(round_id, [])
+    }
+    if sender_id not in allowed_peers:
+        return jsonify(error="Sender is not a configured malicious peer"), 403
+    if update.get("client_id") != sender_id or update.get("round") != round_id:
+        return jsonify(error="Malicious peer update identity mismatch"), 400
+
+    state.receive_malicious_update(
         round_id=round_id,
-        sender_id=int(sender_id),
+        sender_id=sender_id,
         update=update,
     )
+
+    try:
+        peer_update = build_round_update(
+            state,
+            current_app.config["CLIENT_ID"],
+            {
+                "round": round_id,
+                "malicious": True,
+                "attack_enabled": True,
+            },
+        )
+    except (ValueError, KeyError):
+        peer_update = None
 
     return jsonify(
         status="received",
         client_id=current_app.config["CLIENT_ID"],
-        sender_id=int(sender_id),
+        sender_id=sender_id,
         round=round_id,
+        peer_update=peer_update,
     )
 
 

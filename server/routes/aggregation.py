@@ -472,78 +472,6 @@ def start_round(round_id: int):
                 "excluded_at": datetime.now(timezone.utc).isoformat(),
             }
 
-    def submit_colluded_updates(malicious_local_updates):
-        # Share malicious local updates between peer clients.
-        for client in accepted_clients:
-            sender_id = client["client_id"]
-            if sender_id not in malicious_local_updates:
-                continue
-            for peer in accepted_clients:
-                peer_id = peer["client_id"]
-                if peer_id not in malicious_local_updates or peer_id == sender_id:
-                    continue
-                try:
-                    _post_json(
-                        f"{peer['url']}/api/round/update-share",
-                        {
-                            "round": round_id,
-                            "sender_id": sender_id,
-                            "update": malicious_local_updates[sender_id],
-                        },
-                        timeout=60.0,
-                    )
-                except (OSError, ValueError) as error:
-                    current_app.logger.exception(
-                        "Malicious update sharing failed: round=%s sender=%s peer=%s error=%s",
-                        round_id,
-                        sender_id,
-                        peer_id,
-                        error,
-                    )
-
-        # Apply attack scaling to peer-averaged deltas and submit the result.
-        for client in accepted_clients:
-            client_id = client["client_id"]
-            if client_id not in malicious_local_updates:
-                continue
-            peer_updates = [
-                peer_update
-                for peer_id, peer_update in malicious_local_updates.items()
-                if peer_id != client_id
-            ]
-            stage = "collusion"
-            try:
-                colluded_update = _post_json(
-                    f"{client['url']}/api/round/collusion",
-                    {
-                        "round": round_id,
-                        "own_update": malicious_local_updates[client_id],
-                        "peer_updates": peer_updates,
-                    },
-                    timeout=60.0,
-                )
-                stage = "submission"
-                _post_json(
-                    f"{client['url']}/api/round/submit",
-                    {
-                        "round": round_id,
-                        "malicious": True,
-                        "attack_enabled": attack_enabled,
-                        "colluded_update": colluded_update,
-                        "server_url": server_url,
-                    },
-                    timeout=60.0,
-                )
-            except (OSError, ValueError, TypeError) as error:
-                record_exclusion(client_id, "collusion_update_failed")
-                current_app.logger.exception(
-                    "Malicious collusion failed: round=%s client_id=%s stage=%s error=%s",
-                    round_id,
-                    client_id,
-                    stage,
-                    error,
-                )
-
     with ThreadPoolExecutor(max_workers=len(selected_clients)) as executor:
         deliveries = {
             executor.submit(deliver_global_model, client): client
@@ -559,33 +487,15 @@ def start_round(round_id: int):
                     client["client_id"],
                 )
 
-    malicious_local_updates = {}
     for client in accepted_clients:
         client_id = client["client_id"]
         is_malicious = attack_enabled and client_id in malicious_ids
-        if is_malicious:
-            try:
-                malicious_local_updates[client_id] = _post_json(
-                    f"{client['url']}/api/round/execute",
-                    {
-                        "round": round_id,
-                        "malicious": True,
-                        "attack_enabled": True,
-                    },
-                )
-            except (OSError, ValueError):
-                record_exclusion(client_id, "update_generation_failed")
-                current_app.logger.warning(
-                    "Client update generation failed: client_id=%s", client_id
-                )
-            continue
-
         try:
             _post_json(
                 f"{client['url']}/api/round/submit",
                 {
                     "round": round_id,
-                    "malicious": False,
+                    "malicious": is_malicious,
                     "attack_enabled": attack_enabled,
                     "server_url": server_url,
                 },
@@ -599,9 +509,6 @@ def start_round(round_id: int):
                 client_id,
                 error,
             )
-
-    if attack_enabled:
-        submit_colluded_updates(malicious_local_updates)
 
     received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
     updates = list(received_response.values())

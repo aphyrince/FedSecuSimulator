@@ -234,7 +234,10 @@ function applyExperimentTemplate(templateName) {
         const experiment = await experimentResponse.json();
         document.getElementById('experiment-status').textContent =
           `${experiment.status} · 라운드 ${experiment.current_round}/${experiment.total_rounds} · ${experiment.message}`;
-        renderContinuousExperimentStatus(experiment.continuous_experiment);
+        renderContinuousExperimentStatus(
+          experiment.continuous_experiment,
+          experiment,
+        );
         const continuousIsRunning = ['running', 'stopping'].includes(
           experiment.continuous_experiment?.status,
         );

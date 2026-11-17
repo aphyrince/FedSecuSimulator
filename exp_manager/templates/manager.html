@@ -658,6 +658,30 @@
               </button>
             </div>
           </div>
+          <section class="linked-progress" aria-label="통합 실험 진행 상황">
+            <div class="linked-progress-heading">
+              <strong>전체 진행률</strong>
+              <span id="continuous-linked-progress-label">실험 시작 전</span>
+            </div>
+            <div
+              id="continuous-linked-progress"
+              class="linked-progress-track"
+              role="progressbar"
+              aria-label="통합 실험 완료 비율"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              aria-valuetext="실험 시작 전"
+            >
+              <div id="continuous-linked-progress-fill" class="linked-progress-fill"></div>
+            </div>
+          </section>
+          <section class="linked-case-progress" aria-labelledby="linked-case-progress-title">
+            <h4 id="linked-case-progress-title">실험별 진행률</h4>
+            <div id="continuous-linked-case-progress-list" class="linked-case-progress-list">
+              <p class="linked-case-progress-empty">통합 실험을 시작하면 각 실험의 진행 상태가 표시됩니다.</p>
+            </div>
+          </section>
           <pre id="continuous-linked-log" class="continuous-log"></pre>
           <section class="continuous-results" aria-labelledby="continuous-results-title">
           <header class="continuous-results-header">

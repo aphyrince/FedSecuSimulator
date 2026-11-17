@@ -217,6 +217,10 @@ def test_linked_api_and_results_summary_expose_a_single_dashboard():
         assert 'id="continuous-linked-mode-panel"' in page
         assert 'id="continuous-linked-experiments"' in page
         assert 'id="start-continuous-linked-button"' in page
+        assert 'id="continuous-linked-progress"' in page
+        assert 'role="progressbar"' in page
+        assert 'id="continuous-linked-case-progress-list"' in page
+        assert "실험별 진행률" in page
         assert 'id="continuous-results-rows"' in page
         for setting_id in (
             "rounds",

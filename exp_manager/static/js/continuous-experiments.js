@@ -487,8 +487,9 @@ async function startContinuousDlgExperiments() {
   }
 }
 
-function renderContinuousExperimentStatus(batch) {
+function renderContinuousExperimentStatus(batch, experiment = null) {
   if (!batch) {
+    updateLinkedProgress(null);
     return;
   }
   const active = ['running', 'stopping'].includes(batch.status);
@@ -499,6 +500,7 @@ function renderContinuousExperimentStatus(batch) {
     refreshContinuousResults();
   }
   if (batch.experiment_type === 'dlg') {
+    updateLinkedProgress(null);
     continuousDlgRunning = active;
     document.getElementById('continuous-dlg-status').textContent =
       `${batch.status} · ${current}/${batch.total_cases}${name} · 배치 ${batch.batch_id}`;
@@ -513,6 +515,7 @@ function renderContinuousExperimentStatus(batch) {
     return;
   }
   if (batch.experiment_type === 'federated_dlg') {
+    updateLinkedProgress(batch, experiment);
     continuousLinkedRunning = active;
     document.getElementById('reset-continuous-linked-button').disabled = active;
     document.querySelectorAll(
@@ -541,6 +544,7 @@ function renderContinuousExperimentStatus(batch) {
     updateContinuousDlgStartButton();
     return;
   }
+  updateLinkedProgress(null);
   continuousDlgRunning = false;
   continuousLinkedRunning = false;
   document.getElementById('continuous-experiment-status').textContent =
@@ -559,12 +563,140 @@ function renderContinuousExperimentStatus(batch) {
         !row.querySelector('.continuous-round-defense-enabled').checked;
     });
   }
+
   document.getElementById('continuous-experiment-log').textContent = JSON.stringify(
     batch.cases || [],
     null,
     2,
   );
   updateContinuousDlgStartButton();
+}
+
+function updateLinkedProgress(batch, experiment = null) {
+  const progress = document.getElementById('continuous-linked-progress');
+  const fill = document.getElementById('continuous-linked-progress-fill');
+  const label = document.getElementById('continuous-linked-progress-label');
+  const caseList = document.getElementById('continuous-linked-case-progress-list');
+  if (!batch || batch.experiment_type !== 'federated_dlg') {
+    progress.setAttribute('aria-valuenow', '0');
+    progress.setAttribute('aria-valuetext', '통합 실험 실행 중이 아닙니다.');
+    fill.style.width = '0%';
+    label.textContent = '통합 실험 실행 중이 아닙니다.';
+    caseList.replaceChildren();
+    const empty = document.createElement('p');
+    empty.className = 'linked-case-progress-empty';
+    empty.textContent = '통합 실험을 시작하면 각 실험의 진행 상태가 표시됩니다.';
+    caseList.append(empty);
+    return;
+  }
+
+  const cases = Array.isArray(batch.cases) ? batch.cases : [];
+  const total = Math.max(1, Number(batch.total_cases) || cases.length || 36);
+  const count = (status) => cases.filter((item) => item.status === status).length;
+  const completed = count('completed');
+  const running = count('running');
+  const failed = count('failed');
+  const pending = cases.length ? count('pending') : total;
+  const percent = batch.status === 'completed'
+    ? 100
+    : Math.min(100, Math.round((completed / total) * 100));
+  const progressText =
+    `완료 ${completed}/${total} · 진행 중 ${running} · 실패 ${failed} · 대기 ${pending}`;
+
+  progress.setAttribute('aria-valuenow', String(percent));
+  progress.setAttribute('aria-valuetext', `${progressText} (${percent}%)`);
+  fill.style.width = `${percent}%`;
+  label.textContent = batch.status === 'starting'
+    ? `시작 준비 중 · ${progressText}`
+    : `${progressText} · ${percent}%`;
+  renderLinkedCaseProgress(cases, batch, experiment, caseList);
+}
+
+function renderLinkedCaseProgress(cases, batch, experiment, caseList) {
+  caseList.replaceChildren();
+  if (!cases.length) {
+    const empty = document.createElement('p');
+    empty.className = 'linked-case-progress-empty';
+    empty.textContent = batch.status === 'starting'
+      ? '실험 목록을 준비하고 있습니다.'
+      : '표시할 실험이 없습니다.';
+    caseList.append(empty);
+    return;
+  }
+
+  const statusLabels = {
+    pending: '대기',
+    running: '진행 중',
+    completed: '완료',
+    failed: '실패',
+    stopped: '중단',
+  };
+  const currentCase = Number(batch.current_case) || 0;
+  const currentRound = Number(experiment?.current_round) || 0;
+  const totalRounds = Number(experiment?.total_rounds) || 0;
+
+  cases.forEach((item) => {
+    const row = document.createElement('article');
+    row.className = 'linked-case-progress-item';
+
+    const heading = document.createElement('div');
+    heading.className = 'linked-case-progress-heading';
+    const title = document.createElement('strong');
+    const caseNumber = Number(item.case_index) || 0;
+    title.textContent = `${String(caseNumber).padStart(2, '0')} · ${item.name || (item.experiment_type === 'dlg' ? 'DLG' : '연합학습')}`;
+    const detail = document.createElement('span');
+    const caseType = item.experiment_type === 'dlg' ? 'DLG' : '연합학습';
+    detail.textContent = `${caseType} · ${statusLabels[item.status] || item.status || '상태 없음'}`;
+    heading.append(title, detail);
+
+    const track = document.createElement('div');
+    track.className = 'linked-case-progress-track';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', `${title.textContent} 진행률`);
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    const bar = document.createElement('div');
+    bar.className = 'linked-case-progress-fill';
+
+    let value = 0;
+    let valueText = statusLabels[item.status] || '대기';
+    if (item.status === 'completed' || item.status === 'failed') {
+      value = 100;
+      if (item.status === 'failed') {
+        bar.classList.add('is-failed');
+      }
+    } else if (item.status === 'running') {
+      if (item.experiment_type === 'dlg') {
+        track.classList.add('is-indeterminate');
+        valueText = '복원 실행 중';
+      } else if (caseNumber === currentCase) {
+        const caseTotalRounds = Number(item.configuration?.num_rounds) || totalRounds;
+        value = caseTotalRounds > 0
+          ? Math.min(100, Math.round((currentRound / caseTotalRounds) * 100))
+          : 0;
+        valueText = `라운드 ${currentRound}/${caseTotalRounds}`;
+      } else {
+        track.classList.add('is-indeterminate');
+      }
+    } else if (item.status === 'stopped' && caseNumber === currentCase) {
+      const caseTotalRounds = Number(item.configuration?.num_rounds) || totalRounds;
+      value = caseTotalRounds > 0
+        ? Math.min(100, Math.round((currentRound / caseTotalRounds) * 100))
+        : 0;
+      valueText = `중단 · 라운드 ${currentRound}/${caseTotalRounds}`;
+    }
+
+    if (track.classList.contains('is-indeterminate')) {
+      track.setAttribute('aria-valuetext', valueText);
+    } else {
+      track.setAttribute('aria-valuenow', String(value));
+      track.setAttribute('aria-valuetext', `${valueText} (${value}%)`);
+      bar.style.width = `${value}%`;
+    }
+    track.append(bar);
+    row.append(heading, track);
+    caseList.append(row);
+  });
 }
 
 async function startContinuousLinkedExperiments() {
@@ -586,6 +718,12 @@ async function startContinuousLinkedExperiments() {
   }
   continuousLinkedStartPending = true;
   updateContinuousDlgStartButton();
+  updateLinkedProgress({
+    experiment_type: 'federated_dlg',
+    status: 'starting',
+    total_cases: 36,
+    cases: [],
+  });
   document.getElementById('continuous-linked-status').textContent =
     '연합학습 24개와 정상 체크포인트 기반 DLG 12개를 준비하고 있습니다...';
   try {

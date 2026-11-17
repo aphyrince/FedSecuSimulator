@@ -554,6 +554,107 @@ input[type="checkbox"] {
 .continuous-round-editor select { min-height: 32px; min-width: 75px; font-size: 12px; }
 .continuous-actions { margin-top: 16px; }
 .continuous-actions p { color: #475569; font-size: 13px; }
+.linked-progress {
+    margin-top: 12px;
+    padding: 14px 16px;
+    border: 1px solid #e3e9f2;
+    border-radius: 12px;
+    background: #fff;
+}
+.linked-progress-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+    color: #344054;
+    font-size: 13px;
+}
+.linked-progress-heading span {
+    color: #64748b;
+    font-size: 12px;
+    text-align: right;
+}
+.linked-progress-track {
+    height: 10px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #e9eef6;
+}
+.linked-progress-fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #2563eb, #5b8def);
+    transition: width 240ms ease;
+}
+.linked-case-progress {
+    margin-top: 12px;
+}
+.linked-case-progress h4 {
+    margin: 0 0 8px;
+    color: #344054;
+    font-size: 13px;
+}
+.linked-case-progress-list {
+    display: grid;
+    gap: 8px;
+    max-height: 420px;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid #e3e9f2;
+    border-radius: 12px;
+    background: #fff;
+}
+.linked-case-progress-item {
+    display: grid;
+    gap: 5px;
+}
+.linked-case-progress-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: #344054;
+    font-size: 12px;
+}
+.linked-case-progress-heading strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.linked-case-progress-heading span {
+    flex-shrink: 0;
+    color: #64748b;
+}
+.linked-case-progress-track {
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #e9eef6;
+}
+.linked-case-progress-fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #2563eb, #5b8def);
+    transition: width 240ms ease;
+}
+.linked-case-progress-fill.is-failed {
+    background: #dc2626;
+}
+.linked-case-progress-track.is-indeterminate .linked-case-progress-fill {
+    width: 35%;
+    animation: linked-progress-indeterminate 1.4s ease-in-out infinite;
+}
+.linked-case-progress-empty {
+    margin: 0;
+    color: #64748b;
+    font-size: 12px;
+}
+@keyframes linked-progress-indeterminate {
+    from { transform: translateX(-120%); }
+    to { transform: translateX(320%); }
+}
 .continuous-log { margin-top: 12px; }
 .continuous-dlg-input-grid {
     display: grid;

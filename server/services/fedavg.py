@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 import torch
 
 from common.model import decode_weights, encode_weights
-from common.updates import update_delta, validate_updates
+from common.updates import update_deltas
 from fedsec.contracts import ClientUpdate
 from fedsec.aggregation import aggregate_fedavg as aggregate_core
 from security.defenses import coordinate_median as security_coordinate_median
@@ -16,9 +16,13 @@ class FedAvgResult(TypedDict):
     client_weights: dict[str, float]
 
 
-def _accepted(global_model: dict, client_updates: list[dict]) -> list[dict]:
+def _accepted(
+    global_model: dict,
+    client_updates: list[dict],
+    validated_deltas: dict[int, dict] | None = None,
+) -> tuple[list[dict], dict[int, dict]]:
     accepted = [item for item in client_updates if item.get("valid") is True]
-    return validate_updates(global_model, accepted)
+    return accepted, update_deltas(global_model, accepted, validated_deltas)
 
 
 def _result(global_model: dict, delta: dict, updates: list[dict], weights: list[float]) -> FedAvgResult:
@@ -30,12 +34,17 @@ def _result(global_model: dict, delta: dict, updates: list[dict], weights: list[
             "client_weights": {str(item["client_id"]): weight for item, weight in zip(updates, weights)}}
 
 
-def aggregate_fedavg(global_model: dict, client_updates: list[dict]) -> FedAvgResult:
+def aggregate_fedavg(
+    global_model: dict,
+    client_updates: list[dict],
+    *,
+    validated_deltas: dict[int, dict] | None = None,
+) -> FedAvgResult:
     """각 업데이트에 표본 수 비율을 곱해 합산한 뒤 시작 전역 모델에 더한다."""
-    updates = _accepted(global_model, client_updates)
+    updates, deltas = _accepted(global_model, client_updates, validated_deltas)
     total = sum(item["num_samples"] for item in updates)
     weights = [item["num_samples"] / total for item in updates]
-    tensors = [ClientUpdate(item["client_id"], item["num_samples"], update_delta(global_model, item))
+    tensors = [ClientUpdate(item["client_id"], item["num_samples"], deltas[item["client_id"]])
                for item in updates]
     updated = deepcopy(global_model)
     updated["weights"] = encode_weights(aggregate_core(decode_weights(global_model["weights"]), tensors))
@@ -46,25 +55,24 @@ def aggregate_fedavg(global_model: dict, client_updates: list[dict]) -> FedAvgRe
 
 def aggregate_coordinate_median(
     global_model: dict,
-    client_updates: list[dict]
+    client_updates: list[dict],
+    *,
+    validated_deltas: dict[int, dict] | None = None,
 ) -> FedAvgResult:
 
     # 유효한 클라이언트 업데이트 확인
-    updates = _accepted(global_model, client_updates)
+    updates, deltas = _accepted(global_model, client_updates, validated_deltas)
 
     # 실제 Tensor 업데이트 추출
-    deltas = [
-        update_delta(global_model, item)
-        for item in updates
-    ]
+    update_values = [deltas[item["client_id"]] for item in updates]
 
     # 파라미터 이름 정리
-    names = list(deltas[0].keys())
+    names = list(update_values[0].keys())
 
     # 각 클라이언트의 Tensor를 리스트로 변환
     client_layers = [
         [delta[name] for name in names]
-        for delta in deltas
+        for delta in update_values
     ]
 
     # 2번 담당 중앙값 알고리즘 사용
@@ -73,7 +81,7 @@ def aggregate_coordinate_median(
     # 결과를 파라미터 이름별로 복원
     result = dict(zip(names, median_layers))
 
-    size = len(deltas)
+    size = len(update_values)
 
     # 중앙값 델타를 전역 모델에 적용
     return _result(

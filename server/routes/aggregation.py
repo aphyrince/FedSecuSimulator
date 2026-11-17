@@ -21,7 +21,7 @@ from common.model import (
     weights_hash,
     weights_norm,
 )
-from common.updates import update_delta, validate_updates
+from common.updates import update_delta, update_deltas
 from common.training import TrainingSettings
 
 
@@ -50,6 +50,7 @@ def _cancel_round_timer(app, round_id: int) -> None:
 def _finish_round(app, round_id: int) -> None:
     with app.extensions.setdefault("round_completion_lock", threading.Lock()):
         app.extensions.setdefault("completed_rounds", set()).add(round_id)
+        app.extensions.setdefault("round_update_deltas", {}).pop(round_id, None)
         if app.extensions.get("active_round_id") == round_id:
             app.extensions["active_round_id"] = None
     _cancel_round_timer(app, round_id)
@@ -305,7 +306,7 @@ def receive_client_update(round_id: int):
     if "update" not in payload or not isinstance(payload["update"], dict):
         return reject("Invalid update payload", 400)
     try:
-        update_delta(current_app.extensions["global_model"], payload)
+        delta = update_delta(current_app.extensions["global_model"], payload)
         expected = current_app.extensions.get("expected_sample_counts", {}).get(round_id, {}).get(int(client_id))
         if expected is not None and num_samples != expected:
             raise ValueError("Submitted sample count does not match assigned data")
@@ -336,6 +337,9 @@ def receive_client_update(round_id: int):
         if int(client_id) in round_updates:
             return reject("Duplicate client update", 409)
         round_updates[int(client_id)] = payload
+        current_app.extensions.setdefault("round_update_deltas", {}).setdefault(
+            round_id, {}
+        )[int(client_id)] = delta
         received_at = datetime.now(timezone.utc).isoformat()
         round_status[int(client_id)] = {
             **round_status.get(int(client_id), {}),
@@ -619,6 +623,8 @@ def start_round(round_id: int):
     if not available_clients:
         current_app.extensions["selected_clients"][round_id] = []
         current_app.extensions["round_updates"][round_id] = {}
+        current_app.extensions.setdefault("round_update_deltas", {})[round_id] = {}
+        current_app.extensions["round_update_deltas"][round_id] = {}
         current_app.extensions["update_submission_status"][round_id] = {}
         current_app.extensions["update_submission_attempts"][round_id] = []
         current_app.extensions["round_submission_clients"][round_id] = set()
@@ -642,6 +648,7 @@ def start_round(round_id: int):
 
     # 이전 라운드 제출이 재사용되지 않도록 시작 시 해당 라운드 업데이트를 초기화한다.
     current_app.extensions.setdefault("round_updates", {})[round_id] = {}
+    current_app.extensions.setdefault("round_update_deltas", {})[round_id] = {}
     current_app.extensions.setdefault("update_submission_status", {})[round_id] = {}
     current_app.extensions.setdefault("update_submission_attempts", {})[round_id] = []
 
@@ -793,8 +800,17 @@ def execute_result(round_id: int, payload: dict):
         experiment_id = initial["experiment_id"]
         if payload.get("experiment_id") != experiment_id:
             raise ValueError("Experiment identity mismatch")
-        if updates:
-            validate_updates(initial, updates)
+        validated_deltas = (
+            update_deltas(
+                initial,
+                updates,
+                current_app.extensions.get("round_update_deltas", {}).get(
+                    round_id
+                ),
+            )
+            if updates
+            else {}
+        )
         root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
         experiment_dir = root / experiment_id
         if not experiment_dir.resolve().is_relative_to(root.resolve()):
@@ -975,7 +991,7 @@ def execute_result(round_id: int, payload: dict):
             }
             if evaluation is not None:
                 current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
-                _finish_round(current_app._get_current_object(), round_id)
+            _finish_round(current_app._get_current_object(), round_id)
             current_app.extensions["round_results"].append(result)
             progress.update(
                 phase="completed",
@@ -994,14 +1010,21 @@ def execute_result(round_id: int, payload: dict):
             return jsonify(result)
 
         for item in updates:
-            item.setdefault("update", {})["norm_before_defense"] = weights_norm(update_delta(initial, item))
+            item.setdefault("update", {})["norm_before_defense"] = weights_norm(
+                validated_deltas[item["client_id"]]
+            )
         if defense_enabled and defense_type == "norm_clipping":
-            updates = apply_norm_clipping(updates, payload.get("clip_norm", 1.0), global_model=initial)
+            updates = apply_norm_clipping(
+                updates,
+                payload.get("clip_norm", 1.0),
+                global_model=initial,
+                validated_deltas=validated_deltas,
+            )
         elif defense_enabled and defense_type != "coordinate_median":
             raise ValueError("Unsupported defense")
         for item in updates:
             item.setdefault("update", {})["norm_after_defense"] = (
-                weights_norm(update_delta(initial, item))
+                weights_norm(validated_deltas[item["client_id"]])
                 if defense_enabled and defense_type == "norm_clipping"
                 else None
                 if defense_enabled and defense_type == "coordinate_median"
@@ -1019,7 +1042,9 @@ def execute_result(round_id: int, payload: dict):
                 update_norm_after_defense=item["update"].get("norm_after_defense"),
             )
         aggregate = aggregate_coordinate_median if defense_enabled and defense_type == "coordinate_median" else aggregate_fedavg
-        aggregated = aggregate(initial, updates)
+        aggregated = aggregate(
+            initial, updates, validated_deltas=validated_deltas
+        )
         updated = aggregated["global_model"]
         progress.update(phase="evaluating", message="전역 모델을 평가하고 있습니다.")
         evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), payload, round_id)
@@ -1036,7 +1061,7 @@ def execute_result(round_id: int, payload: dict):
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"round": round_id, "client_id": item["client_id"], "num_samples": item["num_samples"],
                     "base_model_hash": item["base_model_hash"], "base_model_version": item["base_model_version"],
-                    "delta": update_delta(initial, item)}, path)
+                    "delta": validated_deltas[item["client_id"]]}, path)
     initial_state, updated_state = decode_weights(initial["weights"]), decode_weights(updated["weights"])
     delta_norm = weights_norm({key: updated_state[key] - initial_state[key] for key in initial_state})
     model_summary = {key: value for key, value in updated.items() if key != "weights"}

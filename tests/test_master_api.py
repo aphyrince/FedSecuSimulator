@@ -17,6 +17,7 @@ import torch
 from clients.app import create_app as create_client_app
 from clients.services.client_state import ClientState
 from clients.services.training_service import build_round_update
+from common.updates import update_delta
 from common.model import create_model, decode_weights, encode_weights, weights_hash, weights_norm, SmallCNN
 from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.process_manager import ProcessManager
@@ -236,6 +237,8 @@ class ApiTests(unittest.TestCase):
             with patch("clients.services.training_service.train_local_model", side_effect=fake_train), \
                     patch("clients.routes.experiment.post_json", side_effect=dispatch), \
                     patch("server.routes.aggregation._post_json", side_effect=dispatch), \
+                    patch("server.routes.aggregation.update_delta", wraps=update_delta) as ingress_delta, \
+                    patch("common.updates.update_delta", wraps=update_delta) as repeated_delta, \
                     patch("server.routes.aggregation.evaluate_global_model", return_value=evaluation):
                 response = api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"})
                 deadline = time.monotonic() + 10
@@ -244,6 +247,9 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 202, response.get_json())
             self.assertEqual(response.get_json()["status"], "started")
             self.assertIn(1, server.extensions["completed_rounds"])
+            self.assertEqual(ingress_delta.call_count, 3)
+            if not attack:
+                self.assertEqual(repeated_delta.call_count, 0)
             result = server.extensions["round_results"][-1]
             expected_execute_clients = []
             observed_execute_clients = sorted(

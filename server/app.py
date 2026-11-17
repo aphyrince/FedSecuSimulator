@@ -38,6 +38,7 @@ def create_app(host: str, port: int):
     app.extensions["availability_responses"] = {}
     app.extensions["selected_clients"] = {}
     app.extensions["round_updates"] = {}
+    app.extensions["round_update_deltas"] = {}
     app.extensions["update_submission_status"] = {}
     app.extensions["update_submission_attempts"] = {}
     app.extensions["expected_sample_counts"] = {}

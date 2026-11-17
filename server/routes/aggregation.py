@@ -473,7 +473,7 @@ def start_round(round_id: int):
             }
 
     def submit_colluded_updates(malicious_local_updates):
-        # 악성 클라이언트들의 추출값을 서로의 API로 직접 공유한다.
+        # Share malicious local updates between peer clients.
         for client in accepted_clients:
             sender_id = client["client_id"]
             if sender_id not in malicious_local_updates:
@@ -490,15 +490,18 @@ def start_round(round_id: int):
                             "sender_id": sender_id,
                             "update": malicious_local_updates[sender_id],
                         },
+                        timeout=60.0,
                     )
-                except (OSError, ValueError):
-                    current_app.logger.warning(
-                        "Malicious update sharing failed: sender=%s peer=%s",
+                except (OSError, ValueError) as error:
+                    current_app.logger.exception(
+                        "Malicious update sharing failed: round=%s sender=%s peer=%s error=%s",
+                        round_id,
                         sender_id,
                         peer_id,
+                        error,
                     )
 
-        # 악성 클라이언트들이 서로의 원본 업데이트를 공유한 뒤 평균과 배율 공격을 적용한다.
+        # Apply attack scaling to peer-averaged deltas and submit the result.
         for client in accepted_clients:
             client_id = client["client_id"]
             if client_id not in malicious_local_updates:
@@ -508,6 +511,7 @@ def start_round(round_id: int):
                 for peer_id, peer_update in malicious_local_updates.items()
                 if peer_id != client_id
             ]
+            stage = "collusion"
             try:
                 colluded_update = _post_json(
                     f"{client['url']}/api/round/collusion",
@@ -516,7 +520,9 @@ def start_round(round_id: int):
                         "own_update": malicious_local_updates[client_id],
                         "peer_updates": peer_updates,
                     },
+                    timeout=60.0,
                 )
+                stage = "submission"
                 _post_json(
                     f"{client['url']}/api/round/submit",
                     {
@@ -526,11 +532,16 @@ def start_round(round_id: int):
                         "colluded_update": colluded_update,
                         "server_url": server_url,
                     },
+                    timeout=60.0,
                 )
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError) as error:
                 record_exclusion(client_id, "collusion_update_failed")
-                current_app.logger.warning(
-                    "Malicious collusion failed: client_id=%s", client_id
+                current_app.logger.exception(
+                    "Malicious collusion failed: round=%s client_id=%s stage=%s error=%s",
+                    round_id,
+                    client_id,
+                    stage,
+                    error,
                 )
 
     with ThreadPoolExecutor(max_workers=len(selected_clients)) as executor:
@@ -581,11 +592,15 @@ def start_round(round_id: int):
                     "attack_enabled": attack_enabled,
                     "server_url": server_url,
                 },
+                timeout=60.0,
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
             record_exclusion(client_id, "update_submission_failed")
-            current_app.logger.warning(
-                "Client update submission failed: client_id=%s", client_id
+            current_app.logger.exception(
+                "Client update submission failed: round=%s client_id=%s error=%s",
+                round_id,
+                client_id,
+                error,
             )
 
     if attack_enabled:

@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import threading
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -38,6 +39,17 @@ def create_app(host: str, port: int):
     app.extensions["selected_clients"] = {}
     app.extensions["round_updates"] = {}
     app.extensions["update_submission_status"] = {}
+    app.extensions["update_submission_attempts"] = {}
+    app.extensions["expected_sample_counts"] = {}
+    app.extensions["update_deadlines"] = {}
+    app.extensions["round_payloads"] = {}
+    app.extensions["round_submission_clients"] = {}
+    app.extensions["round_delivery_complete"] = {}
+    app.extensions["round_deadline_reached"] = {}
+    app.extensions["round_aggregation_started"] = set()
+    app.extensions["round_timers"] = {}
+    app.extensions["round_completion_lock"] = threading.Lock()
+    app.extensions["active_round_id"] = None
     app.extensions["global_model"] = None
     app.extensions["global_model_history"] = []
     app.extensions["evaluation_results"] = {}

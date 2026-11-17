@@ -79,6 +79,12 @@ DLG_LABEL_PATH=data/dlg/sample_label.txt
 기본 포트는 관리자 `8000`, 서버 `5000`, 클라이언트 `5101`~`5110`입니다. 서버 또는 클라이언트를
 개별 실행할 때는 다음 명령을 사용합니다.
 
+연합학습 라운드 시작 API는 선택된 클라이언트에 전역 모델을 전달한 뒤 `202 Accepted`로 빠르게 응답합니다.
+각 클라이언트는 백그라운드에서 학습하고 업데이트를 `POST /api/rounds/<round_id>/updates`로 직접 제출합니다.
+중앙 서버는 기대 업데이트를 모두 받거나 라운드 제한 시간에 도달하면 집계·평가하고,
+`POST /api/results/round`로 실험 관리자에 결과를 알립니다. 실험 관리자는 콜백을 기록한 뒤 다음 라운드를 시작합니다.
+학습 또는 업데이트 제출 실패는 `POST /api/rounds/<round_id>/failures`로 보고되며, 실패한 클라이언트는 집계에서 제외됩니다.
+
 ```powershell
 .\.venv\Scripts\python.exe server\app.py
 .\.venv\Scripts\python.exe clients\app.py --client-id 0 --port 5101
@@ -221,7 +227,9 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/experiment/replay `
 ### 서버 라운드 및 DLG
 
 - 라운드: `POST /api/round/config`, `POST /api/rounds/<round_id>/start`,
-  `POST /api/rounds/<round_id>/updates`, `GET /api/rounds/<round_id>/updates/status`
+  `POST /api/rounds/<round_id>/updates`, `POST /api/rounds/<round_id>/failures`,
+  `GET /api/rounds/<round_id>/updates/status`
+- 클라이언트 모델 전달: `POST /api/model/global`은 학습 완료를 기다리지 않고 `202 Accepted`를 반환합니다.
 - 모델·평가: `GET /api/model/global`, `GET /api/model/history`,
   `GET /api/evaluation/<round_id>`
 - DLG: `POST /api/dlg/participant`, `POST /api/dlg/start`, `POST /api/dlg/gradient`

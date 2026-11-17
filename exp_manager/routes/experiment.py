@@ -135,11 +135,26 @@ def execute_round(round_id):
 def receive_round_result():
     """중앙 서버로부터 라운드 결과를 수신해 관리자 상태에 저장한다."""
     result = request.get_json(silent=True) or {}
-    round_id = int(result.get("round", 0))
-    if round_id < 1:
+    round_id = result.get("round")
+    if type(round_id) is not int or round_id < 1:
         return jsonify(error="Round number must be positive"), 400
     manager = current_app.extensions["experiment_manager"]
-    round_path = manager.record_round_result(result)
+    if result.get("status") == "failed":
+        try:
+            manager.record_round_failure(result)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(status="received", round=round_id)
+    try:
+        round_path = manager.record_round_result(
+            result,
+            advance=(
+                not manager.single_round_active
+                and manager.state.get("status") == "running"
+            ),
+        )
+    except (KeyError, TypeError, ValueError, OSError, RuntimeError) as exc:
+        return jsonify(error=str(exc)), 400
     return jsonify(
         status="received",
         round=round_id,

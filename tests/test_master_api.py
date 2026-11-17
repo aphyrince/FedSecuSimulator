@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -170,8 +171,11 @@ class ApiTests(unittest.TestCase):
             training_state = {"completed": 0}
             training_lock = threading.Lock()
             all_training_finished = threading.Event()
+            first_update_submitted = threading.Event()
 
             def fake_train(global_model, dataset_range, training_config, round_id, client_id, **kwargs):
+                if client_id in (0, 1):
+                    self.assertTrue(first_update_submitted.wait(timeout=5))
                 self.assertEqual((training_config["local_epochs"], training_config["batch_size"], training_config["learning_rate"]), (3, 7, 0.02))
                 starts.append((attack, client_id, weights_hash(global_model["weights"])))
                 base = decode_weights(global_model["weights"])
@@ -223,6 +227,7 @@ class ApiTests(unittest.TestCase):
                     submission_before_all_training_finished.append(
                         not all_training_finished.is_set()
                     )
+                    first_update_submitted.set()
                 return response.get_json()
 
             global_delivery_barrier = threading.Barrier(3)
@@ -233,8 +238,13 @@ class ApiTests(unittest.TestCase):
                     patch("server.routes.aggregation._post_json", side_effect=dispatch), \
                     patch("server.routes.aggregation.evaluate_global_model", return_value=evaluation):
                 response = api.post("/api/rounds/1/start", json={**config, "server_url": "http://server"})
-            self.assertEqual(response.status_code, 200, response.get_json())
-            result = response.get_json()
+                deadline = time.monotonic() + 10
+                while 1 not in server.extensions["completed_rounds"] and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(response.status_code, 202, response.get_json())
+            self.assertEqual(response.get_json()["status"], "started")
+            self.assertIn(1, server.extensions["completed_rounds"])
+            result = server.extensions["round_results"][-1]
             expected_execute_clients = []
             observed_execute_clients = sorted(
                 int(host.removeprefix("client"))
@@ -247,7 +257,7 @@ class ApiTests(unittest.TestCase):
                 if path == "/api/round/submit"
             )
             self.assertEqual(observed_execute_clients, expected_execute_clients)
-            self.assertEqual(observed_submit_clients, [0, 1, 2])
+            self.assertEqual(observed_submit_clients, [])
             self.assertEqual(compact_submissions[attack], 3)
             self.assertEqual(
                 sorted(direct_peer_exchanges[attack]),
@@ -281,7 +291,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(starts[0][2], starts[1][2])
         self.assertEqual(starts[0][2], starts[3][2])
         self.assertEqual(outcomes[False]["initial_model_hash"], outcomes[True]["initial_model_hash"])
-        self.assertEqual(submission_before_all_training_finished, [False] * 6)
+        self.assertTrue(any(submission_before_all_training_finished))
 
     def test_failed_evaluation_returns_failure_without_fake_accuracy_or_model_commit(self):
         app = create_server_app("127.0.0.1", 5000)

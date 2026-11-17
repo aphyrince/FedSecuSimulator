@@ -37,11 +37,213 @@ def one_round_at_a_time(function):
         try:
             return function(*args, **kwargs)
         finally:
-            timer = current_app.extensions.pop("round_timer", None)
-            if timer is not None:
-                timer.cancel()
             lock.release()
     return wrapped
+
+
+def _cancel_round_timer(app, round_id: int) -> None:
+    timer = app.extensions.setdefault("round_timers", {}).pop(round_id, None)
+    if timer is not None:
+        timer.cancel()
+
+
+def _finish_round(app, round_id: int) -> None:
+    with app.extensions.setdefault("round_completion_lock", threading.Lock()):
+        app.extensions.setdefault("completed_rounds", set()).add(round_id)
+        if app.extensions.get("active_round_id") == round_id:
+            app.extensions["active_round_id"] = None
+    _cancel_round_timer(app, round_id)
+
+
+def _maybe_schedule_round_aggregation(app, round_id: int) -> None:
+    with app.app_context():
+        extensions = app.extensions
+        completion_lock = extensions.setdefault(
+            "round_completion_lock", threading.Lock()
+        )
+        with completion_lock:
+            if (
+                round_id in extensions.get("completed_rounds", set())
+                or round_id in extensions.setdefault(
+                    "round_aggregation_started", set()
+                )
+                or not extensions.setdefault("round_delivery_complete", {}).get(
+                    round_id, False
+                )
+            ):
+                return
+
+            expected = set(
+                extensions.setdefault("round_submission_clients", {}).get(
+                    round_id, set()
+                )
+            )
+            received = set(
+                extensions.get("round_updates", {}).get(round_id, {})
+            )
+            statuses = extensions.get("update_submission_status", {}).get(
+                round_id, {}
+            )
+            terminal = received | {
+                client_id
+                for client_id, status in statuses.items()
+                if status.get("status")
+                in {"excluded", "expired", "rejected", "failed"}
+            }
+            deadline_reached = extensions.setdefault(
+                "round_deadline_reached", {}
+            ).get(round_id, False)
+            if not deadline_reached and not expected.issubset(terminal):
+                return
+
+            extensions["round_aggregation_started"].add(round_id)
+            payload = deepcopy(
+                extensions.setdefault("round_payloads", {}).get(round_id, {})
+            )
+            updates = extensions.get("round_updates", {}).get(round_id, {})
+            payload["updates"] = [
+                deepcopy(updates[client_id]) for client_id in sorted(updates)
+            ]
+            _cancel_round_timer(app, round_id)
+
+    threading.Thread(
+        target=_run_round_aggregation,
+        args=(app, round_id, payload),
+        name=f"aggregate-round-{round_id}",
+        daemon=True,
+    ).start()
+
+
+def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
+    with app.app_context():
+        try:
+            response = execute_result(round_id, payload)
+            if response.status_code >= 400:
+                body = response.get_json(silent=True) or {}
+                raise RuntimeError(
+                    body.get("error", f"Round aggregation failed ({response.status_code})")
+                )
+        except Exception as error:
+            app.logger.exception("Asynchronous round aggregation failed: round=%s", round_id)
+            app.extensions.setdefault("round_progress", {}).update(
+                round=round_id,
+                phase="failed",
+                message=str(error),
+            )
+            _finish_round(app, round_id)
+            payload = {
+                "round": round_id,
+                "experiment_id": payload.get("experiment_id"),
+                "status": "failed",
+                "error": str(error),
+            }
+            callback_url = payload.get("experiment_manager_url")
+            if callback_url:
+                try:
+                    _post_json(
+                        callback_url.rstrip("/") + "/api/results/round",
+                        payload,
+                        timeout=30.0,
+                    )
+                except (OSError, ValueError, URLError):
+                    app.logger.exception(
+                        "Round failure callback failed: round=%s", round_id
+                    )
+
+
+def _deliver_round_models(app, round_id: int) -> None:
+    with app.app_context():
+        config = app.extensions["round_payloads"][round_id]
+        selected_ids = app.extensions["selected_clients"][round_id]
+        clients = app.extensions["clients"]
+        attack_enabled = bool(config.get("attack_enabled", False))
+        malicious_ids = set(config.get("malicious_clients", []))
+        delay_ids = set(config.get("delay_clients", []))
+        selected_clients = [
+            clients[client_id]
+            for client_id in selected_ids
+            if client_id not in delay_ids
+        ]
+        global_model = app.extensions["global_model"]
+        deadline = datetime.fromisoformat(
+            app.extensions["update_deadlines"][round_id]
+        )
+        training_config = {
+            **TrainingSettings.from_dict(config).to_dict(),
+            "seed": config.get("seed", 42),
+        }
+
+        for client_id in delay_ids.intersection(selected_ids):
+            app.extensions["update_submission_status"][round_id][client_id].update(
+                status="excluded",
+                reason="configured_delay",
+                excluded_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+        def deliver(client):
+            client_id = client["client_id"]
+            return _post_json(
+                f"{client['url']}/api/model/global",
+                {
+                    **global_model,
+                    "round": round_id,
+                    "attack_enabled": attack_enabled,
+                    "server_url": config["server_url"],
+                    "training_config": training_config,
+                    "update_deadline": deadline.isoformat(),
+                    "round_context": {
+                        "selected": True,
+                        "malicious": attack_enabled and client_id in malicious_ids,
+                        "delayed": client_id in delay_ids,
+                    },
+                },
+                timeout=max(
+                    0.001,
+                    (deadline - datetime.now(timezone.utc)).total_seconds(),
+                ),
+            )
+
+        failed_deliveries = []
+        with ThreadPoolExecutor(max_workers=max(1, len(selected_clients))) as executor:
+            futures = {
+                executor.submit(deliver, client): client
+                for client in selected_clients
+            }
+            for future in as_completed(futures):
+                client_id = futures[future]["client_id"]
+                try:
+                    future.result()
+                except (OSError, ValueError, TypeError) as error:
+                    failed_deliveries.append(client_id)
+                    app.logger.warning(
+                        "Global model delivery failed: round=%s client_id=%s error=%s",
+                        round_id,
+                        client_id,
+                        error,
+                    )
+
+        with app.extensions["round_completion_lock"]:
+            expected = app.extensions["round_submission_clients"][round_id]
+            for client_id in failed_deliveries:
+                expected.discard(client_id)
+                app.extensions["update_submission_status"][round_id][client_id] = {
+                    "status": "excluded",
+                    "reason": "model_delivery_failed",
+                    "excluded_at": datetime.now(timezone.utc).isoformat(),
+                }
+            app.extensions["round_delivery_complete"][round_id] = True
+            if app.extensions["round_deadline_reached"][round_id]:
+                received = app.extensions["round_updates"].get(round_id, {})
+                for client_id in expected - set(received):
+                    app.extensions["update_submission_status"][round_id][
+                        client_id
+                    ]["status"] = "expired"
+
+        app.extensions["round_progress"].update(
+            phase="waiting_for_updates",
+            message="모델 전달이 완료되었습니다. 클라이언트 업데이트를 기다리고 있습니다.",
+        )
+        _maybe_schedule_round_aggregation(app, round_id)
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/updates")
@@ -91,6 +293,12 @@ def receive_client_update(round_id: int):
     selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
     if int(client_id) not in selected:
         return reject("Client was not selected for this round", 403)
+    if (
+        round_id in current_app.extensions.get("round_submission_clients", {})
+        and int(client_id)
+        not in current_app.extensions["round_submission_clients"][round_id]
+    ):
+        return reject("Client is not expected to submit in this round", 403)
     num_samples = payload.get("num_samples")
     if not isinstance(num_samples, (int, float)) or num_samples < 0:
         return reject("num_samples must be a non-negative number", 400)
@@ -104,29 +312,116 @@ def receive_client_update(round_id: int):
     except (ValueError, KeyError, TypeError) as error:
         return reject(str(error), 400)
 
-    updates = current_app.extensions.setdefault("round_updates", {})
-    round_updates = updates.setdefault(round_id, {})
-    if int(client_id) in round_updates:
-        return reject("Duplicate client update", 409)
-    round_updates[int(client_id)] = payload
-    round_status[int(client_id)] = {
-        **round_status.get(int(client_id), {}),
-        "status": "received",
-        "num_samples": num_samples,
-        "received_at": datetime.now(timezone.utc).isoformat(),
-    }
-    round_attempts.append({
-        "client_id": int(client_id),
-        "status": "received",
-        "num_samples": num_samples,
-        "timestamp": round_status[int(client_id)]["received_at"],
-    })
+    completion_lock = current_app.extensions.setdefault(
+        "round_completion_lock", threading.Lock()
+    )
+    with completion_lock:
+        if (
+            round_id in current_app.extensions.get("completed_rounds", set())
+            or round_id
+            in current_app.extensions.get("round_aggregation_started", set())
+        ):
+            return reject("Round aggregation has already started", 409)
+        deadline = current_app.extensions.get("update_deadlines", {}).get(round_id)
+        if deadline and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline):
+            return reject("Submission deadline expired", 408)
+        if round_status.get(int(client_id), {}).get("status") in {
+            "excluded",
+            "expired",
+            "failed",
+        }:
+            return reject("Client submission is already closed", 409)
+        updates = current_app.extensions.setdefault("round_updates", {})
+        round_updates = updates.setdefault(round_id, {})
+        if int(client_id) in round_updates:
+            return reject("Duplicate client update", 409)
+        round_updates[int(client_id)] = payload
+        received_at = datetime.now(timezone.utc).isoformat()
+        round_status[int(client_id)] = {
+            **round_status.get(int(client_id), {}),
+            "status": "received",
+            "num_samples": num_samples,
+            "received_at": received_at,
+        }
+        round_attempts.append({
+            "client_id": int(client_id),
+            "status": "received",
+            "num_samples": num_samples,
+            "timestamp": received_at,
+        })
+    _maybe_schedule_round_aggregation(
+        current_app._get_current_object(), round_id
+    )
     return jsonify(
         status="received",
         round=round_id,
         client_id=int(client_id),
         count=len(round_updates),
     )
+
+
+@aggregation_bp.post("/api/rounds/<int:round_id>/failures")
+def receive_client_round_failure(round_id: int):
+    """클라이언트가 로컬 학습 또는 제출 실패를 보고한다."""
+    payload = request.get_json(silent=True) or {}
+    client_id = payload.get("client_id")
+    if type(client_id) is not int or client_id < 0:
+        return jsonify(error="client_id must be a non-negative integer"), 400
+    if payload.get("round", round_id) != round_id:
+        return jsonify(error="Round number mismatch"), 400
+    if client_id not in current_app.extensions.get("selected_clients", {}).get(
+        round_id, []
+    ):
+        return jsonify(error="Client was not selected for this round"), 403
+    expected = current_app.extensions.get("round_submission_clients", {}).get(
+        round_id
+    )
+    if expected is not None and client_id not in expected:
+        return jsonify(error="Client is not expected to submit in this round"), 403
+
+    completion_lock = current_app.extensions.setdefault(
+        "round_completion_lock", threading.Lock()
+    )
+    with completion_lock:
+        if (
+            round_id in current_app.extensions.get("completed_rounds", set())
+            or round_id
+            in current_app.extensions.get("round_aggregation_started", set())
+        ):
+            return jsonify(error="Round aggregation has already started"), 409
+        deadline = current_app.extensions.get("update_deadlines", {}).get(round_id)
+        if deadline and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline):
+            return jsonify(error="Submission deadline expired"), 408
+        if client_id in current_app.extensions.get("round_updates", {}).get(
+            round_id, {}
+        ):
+            return jsonify(error="Client update was already received"), 409
+        now = datetime.now(timezone.utc).isoformat()
+        reason = str(payload.get("reason", "client_failure"))
+        status = current_app.extensions.setdefault(
+            "update_submission_status", {}
+        ).setdefault(round_id, {})
+        status[client_id] = {
+            **status.get(client_id, {}),
+            "status": "excluded",
+            "reason": reason,
+            "error": str(payload.get("error", "")),
+            "excluded_at": now,
+        }
+        current_app.extensions.setdefault(
+            "update_submission_attempts", {}
+        ).setdefault(round_id, []).append({
+            "client_id": client_id,
+            "status": "failed",
+            "reason": reason,
+            "error": str(payload.get("error", "")),
+            "timestamp": now,
+        })
+
+    _maybe_schedule_round_aggregation(
+        current_app._get_current_object(), round_id
+    )
+    return jsonify(status="recorded", round=round_id, client_id=client_id)
 
 
 @aggregation_bp.get("/api/rounds/<int:round_id>/updates")
@@ -239,6 +534,11 @@ def aggregate_round(round_id: int):
 @one_round_at_a_time
 def execute_round(round_id: int):
     """수신한 클라이언트 업데이트를 유효성 검사하고 단일 라운드를 집계한다."""
+    active_round = current_app.extensions.get("active_round_id")
+    if active_round is not None and active_round not in current_app.extensions.get(
+        "completed_rounds", set()
+    ):
+        return jsonify(error="An asynchronous round is still active"), 409
     payload = request.get_json(silent=True) or {}
     return execute_result(round_id, payload)
 
@@ -249,6 +549,11 @@ def start_round(round_id: int):
     """실험 관리자의 시작 신호를 받아 선택 클라이언트 실행과 집계를 처리한다."""
     if round_id in current_app.extensions.get("completed_rounds", set()):
         return jsonify(error="Configure a new experiment before reusing a completed round"), 409
+    active_round = current_app.extensions.get("active_round_id")
+    if active_round is not None and active_round not in current_app.extensions.get(
+        "completed_rounds", set()
+    ):
+        return jsonify(error=f"Round {active_round} is still active"), 409
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
     config["round"] = round_id
@@ -281,6 +586,10 @@ def start_round(round_id: int):
     if not registered:
         progress.update(phase="failed", message="등록된 클라이언트가 없습니다.")
         return jsonify(error="No registered clients"), 409
+    global_model = current_app.extensions.get("global_model")
+    if global_model is None:
+        progress.update(phase="failed", message="전역 모델이 초기화되지 않았습니다.")
+        return jsonify(error="Global model is not initialized"), 409
 
     availability_responses = []
     available_clients = []
@@ -312,16 +621,24 @@ def start_round(round_id: int):
         current_app.extensions["round_updates"][round_id] = {}
         current_app.extensions["update_submission_status"][round_id] = {}
         current_app.extensions["update_submission_attempts"][round_id] = []
-        progress.update(phase="aggregating", message="참여 가능한 클라이언트가 없어 모델을 유지합니다.")
-        return execute_result(
-            round_id,
-            {
-                **config,
-                "selected_clients": [],
-                "updates": [],
-                "experiment_manager_url": config.get("experiment_manager_url"),
-            },
+        current_app.extensions["round_submission_clients"][round_id] = set()
+        current_app.extensions["round_delivery_complete"][round_id] = True
+        current_app.extensions["round_deadline_reached"][round_id] = False
+        current_app.extensions["round_payloads"][round_id] = {
+            **config,
+            "selected_clients": [],
+            "delay_clients": [],
+            "experiment_manager_url": config.get("experiment_manager_url"),
+        }
+        current_app.extensions["active_round_id"] = round_id
+        progress.update(
+            phase="waiting_for_updates",
+            message="참여 가능한 클라이언트가 없어 결과를 마무리하고 있습니다.",
         )
+        _maybe_schedule_round_aggregation(
+            current_app._get_current_object(), round_id
+        )
+        return jsonify(status="started", round=round_id, selected_clients=[]), 202
 
     # 이전 라운드 제출이 재사용되지 않도록 시작 시 해당 라운드 업데이트를 초기화한다.
     current_app.extensions.setdefault("round_updates", {})[round_id] = {}
@@ -373,29 +690,53 @@ def start_round(round_id: int):
     current_app.extensions.setdefault("update_deadlines", {})[round_id] = (
         deadline.isoformat()
     )
+    delay_clients = [
+        client["client_id"]
+        for client in selected_clients
+        if client["client_id"] in delay_ids
+    ]
+    current_app.extensions["round_payloads"][round_id] = {
+        **config,
+        "selected_clients": selected_ids,
+        "delay_clients": delay_clients,
+        "server_url": config.get(
+            "server_url",
+            f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
+        ),
+        "experiment_manager_url": config.get("experiment_manager_url"),
+    }
+    current_app.extensions["round_submission_clients"][round_id] = (
+        set(selected_ids) - set(delay_clients)
+    )
+    current_app.extensions["round_delivery_complete"][round_id] = False
+    current_app.extensions["round_deadline_reached"][round_id] = False
+    current_app.extensions["round_aggregation_started"].discard(round_id)
+    current_app.extensions["active_round_id"] = round_id
 
     def notify_expired() -> None:
-        from flask import current_app as flask_current_app
-
         with app.app_context():
-            if round_id in app.extensions.get("completed_rounds", set()):
-                return
-            flask_current_app.extensions.setdefault("update_submission_status", {})[
-                round_id
-            ]
-            selected = flask_current_app.extensions["selected_clients"].get(round_id, [])
-            received = flask_current_app.extensions["round_updates"].get(round_id, {})
-            statuses = flask_current_app.extensions[
-                "update_submission_status"
-            ][round_id]
-            for client_id in sorted(set(selected) - set(received)):
-                if statuses.get(client_id, {}).get("reason") == "configured_delay":
-                    continue
-                statuses.setdefault(client_id, {}).update(
-                    status="expired",
-                    expired_at=datetime.now(timezone.utc).isoformat(),
+            with app.extensions["round_completion_lock"]:
+                if (
+                    round_id in app.extensions.get("completed_rounds", set())
+                    or round_id
+                    in app.extensions.get("round_aggregation_started", set())
+                ):
+                    return
+                app.extensions["round_deadline_reached"][round_id] = True
+                expected = app.extensions["round_submission_clients"].get(
+                    round_id, set()
                 )
-                client = flask_current_app.extensions["clients"].get(client_id)
+                received = app.extensions["round_updates"].get(round_id, {})
+                statuses = app.extensions["update_submission_status"][round_id]
+                missing = sorted(set(expected) - set(received))
+                for client_id in missing:
+                    statuses.setdefault(client_id, {}).update(
+                        status="expired",
+                        expired_at=datetime.now(timezone.utc).isoformat(),
+                    )
+
+            for client_id in missing:
+                client = app.extensions["clients"].get(client_id)
                 if client:
                     try:
                         _post_json(
@@ -407,122 +748,28 @@ def start_round(round_id: int):
                         app.logger.warning(
                             "Timeout notification failed: client_id=%s", client_id
                         )
+            _maybe_schedule_round_aggregation(app, round_id)
 
     timer = threading.Timer(timeout_seconds, notify_expired)
     timer.daemon = True
-    current_app.extensions["round_timer"] = timer
+    current_app.extensions["round_timers"][round_id] = timer
     timer.start()
 
-    global_model = current_app.extensions.get("global_model")
-    if global_model is None:
-        return jsonify(error="Global model is not initialized"), 409
-
-    training_config = {
-        **TrainingSettings.from_dict(config).to_dict(),
-        "seed": seed,
-    }
-    server_url = config.get(
-        "server_url",
-        f"http://{request.host.split(':')[0]}:{current_app.config['PORT']}",
-    )
-
-    def deliver_global_model(client):
-        client_id = client["client_id"]
-        round_context = {
-            "selected": True,
-            "malicious": attack_enabled and client_id in malicious_ids,
-            "delayed": client_id in delay_ids,
-        }
-        return _post_json(
-            f"{client['url']}/api/model/global",
-            {
-                **global_model,
-                "round": round_id,
-                "training_config": training_config,
-                "update_deadline": deadline.isoformat(),
-                "round_context": round_context,
-            },
-            timeout=max(
-                0.001, (deadline - datetime.now(timezone.utc)).total_seconds()
-            ),
-        )
-
-    accepted_clients = [
-        client for client in selected_clients if client["client_id"] not in delay_ids
-    ]
-
-    def record_exclusion(client_id: int, reason: str):
-        status = current_app.extensions["update_submission_status"][round_id]
-        if status.get(client_id, {}).get("status") in {None, "waiting"}:
-            status[client_id] = {
-                "status": "excluded",
-                "reason": reason,
-                "excluded_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-    for client in selected_clients:
-        if client["client_id"] in delay_ids:
-            existing_status = current_app.extensions[
-                "update_submission_status"
-            ][round_id][client["client_id"]]
-            current_app.extensions["update_submission_status"][round_id][client["client_id"]] = {
-                **existing_status,
-                "status": "excluded",
-                "reason": "configured_delay",
-                "excluded_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-    with ThreadPoolExecutor(max_workers=len(selected_clients)) as executor:
-        deliveries = {
-            executor.submit(deliver_global_model, client): client
-            for client in selected_clients
-        }
-        for future in as_completed(deliveries):
-            client = deliveries[future]
-            try:
-                future.result()
-            except (OSError, ValueError):
-                current_app.logger.warning(
-                    "Global model delivery failed: client_id=%s",
-                    client["client_id"],
-                )
-
-    for client in accepted_clients:
-        client_id = client["client_id"]
-        is_malicious = attack_enabled and client_id in malicious_ids
-        try:
-            _post_json(
-                f"{client['url']}/api/round/submit",
-                {
-                    "round": round_id,
-                    "malicious": is_malicious,
-                    "attack_enabled": attack_enabled,
-                    "server_url": server_url,
-                },
-                timeout=60.0,
-            )
-        except (OSError, ValueError) as error:
-            record_exclusion(client_id, "update_submission_failed")
-            current_app.logger.exception(
-                "Client update submission failed: round=%s client_id=%s error=%s",
-                round_id,
-                client_id,
-                error,
-            )
-
-    received_response = current_app.extensions.get("round_updates", {}).get(round_id, {})
-    updates = list(received_response.values())
-    progress.update(phase="aggregating", message="업데이트를 집계하고 모델을 평가하고 있습니다.")
-    result_payload = {
-        **config,
-        "selected_clients": selected_ids,
-        "delay_clients": [
-            client["client_id"] for client in selected_clients if client["client_id"] in delay_ids
-        ],
-        "updates": updates,
-    }
-    timer.cancel()
-    return execute_result(round_id, result_payload)
+    threading.Thread(
+        target=_deliver_round_models,
+        args=(app, round_id),
+        name=f"deliver-round-{round_id}",
+        daemon=True,
+    ).start()
+    return jsonify(
+        status="started",
+        round=round_id,
+        selected_clients=selected_ids,
+        expected_clients=sorted(
+            current_app.extensions["round_submission_clients"][round_id]
+        ),
+        deadline=deadline.isoformat(),
+    ), 202
 
 
 def execute_result(round_id: int, payload: dict):
@@ -728,7 +975,7 @@ def execute_result(round_id: int, payload: dict):
             }
             if evaluation is not None:
                 current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
-            current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
+                _finish_round(current_app._get_current_object(), round_id)
             current_app.extensions["round_results"].append(result)
             progress.update(
                 phase="completed",
@@ -820,7 +1067,7 @@ def execute_result(round_id: int, payload: dict):
         "total_samples": aggregated["total_samples"], "client_weights": aggregated["client_weights"],
     })
     current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
-    current_app.extensions.setdefault("completed_rounds", set()).add(round_id)
+    _finish_round(current_app._get_current_object(), round_id)
     current_app.extensions["round_results"].append(result)
     progress.update(phase="completed", message="라운드 집계와 평가가 완료되었습니다.")
     callback_url = payload.get("experiment_manager_url")

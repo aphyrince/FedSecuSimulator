@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import threading
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -13,6 +14,126 @@ from common.model import MODEL_FORMAT, finite_number
 
 experiment_bp = Blueprint("client_experiment", __name__)
 PROJECT_ROOT_PATH = Path(__file__).resolve().parents[2]
+
+
+def _submit_round_update(
+    state, client_id: int, payload: dict, default_server_url: str
+) -> dict:
+    round_id = int(payload.get("round", 1))
+    update = build_round_update(state, client_id, payload)
+
+    if payload.get("malicious") and payload.get("attack_enabled"):
+        peers = state.malicious_peers.get(round_id, [])
+        if not peers:
+            raise ValueError("Malicious peer information is missing")
+
+        peer_updates = []
+        for peer in peers:
+            peer_id = peer.get("client_id")
+            peer_url = peer.get("url")
+            if (
+                type(peer_id) is not int
+                or peer_id == client_id
+                or not isinstance(peer_url, str)
+                or not peer_url
+            ):
+                raise ValueError("Invalid malicious peer information")
+            exchange = post_json(
+                f"{peer_url.rstrip('/')}/api/round/update-share",
+                {
+                    "round": round_id,
+                    "sender_id": client_id,
+                    "update": update,
+                },
+                timeout=60.0,
+                compact=True,
+            )
+            peer_update = exchange.get("peer_update")
+            if peer_update is not None:
+                if (
+                    not isinstance(peer_update, dict)
+                    or peer_update.get("client_id") != peer_id
+                    or peer_update.get("round") != round_id
+                ):
+                    raise ValueError("Malicious peer update identity mismatch")
+                peer_updates.append(peer_update)
+
+        update = collude_updates(
+            state.global_model,
+            update,
+            peer_updates,
+            state.attack_scale_by_round.get(round_id, -5.0),
+        )
+
+    if update.get("client_id") != client_id or update.get("round") != round_id:
+        raise ValueError("Submission identity mismatch")
+
+    server_url = payload.get("server_url", default_server_url)
+    response = post_json(
+        f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
+        update,
+        timeout=60.0,
+        compact=True,
+    )
+    state.save_submission(round_id, response)
+    return response
+
+
+def _report_training_failure(app, payload: dict, client_id: int, error: Exception):
+    round_id = int(payload.get("round", 1))
+    state = app.extensions["client_state"]
+    status = "expired" if isinstance(error, TimeoutError) else "failed"
+    state.fail_training(round_id, str(error), status=status)
+    try:
+        post_json(
+            f"{payload['server_url'].rstrip('/')}/api/rounds/{round_id}/failures",
+            {
+                "round": round_id,
+                "client_id": client_id,
+                "reason": "training_timeout" if status == "expired" else "client_failure",
+                "error": str(error),
+            },
+            timeout=3.0,
+        )
+    except (OSError, ValueError):
+        app.logger.exception(
+            "Failed to report client round failure: round=%s client_id=%s",
+            round_id,
+            client_id,
+        )
+
+
+def _train_and_submit(app, payload: dict):
+    state = app.extensions["client_state"]
+    client_id = app.config["CLIENT_ID"]
+    round_id = int(payload.get("round", 1))
+    try:
+        with app.app_context():
+            run_local_training(state, client_id, payload)
+            round_context = payload.get("round_context", {})
+            _submit_round_update(
+                state,
+                client_id,
+                {
+                    "round": round_id,
+                    "malicious": bool(round_context.get("malicious", False)),
+                    "attack_enabled": bool(payload.get("attack_enabled", False)),
+                    "server_url": payload["server_url"],
+                },
+                app.config["SERVER_URL"],
+            )
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        TimeoutError,
+    ) as error:
+        with app.app_context():
+            _report_training_failure(app, payload, client_id, error)
+    finally:
+        state.training_lock.release()
 
 
 @experiment_bp.post("/api/experiment/config")
@@ -35,46 +156,52 @@ def get_config():
 
 @experiment_bp.post("/api/model/global")
 def receive_global_model():
-    """중앙 서버가 전달한 전역 모델을 수신해 로컬 최신 모델로 저장한다."""
+    """전역 모델을 저장하고 백그라운드 학습을 시작한다."""
     payload = request.get_json(silent=True) or {}
     state = current_app.extensions["client_state"]
+    if not isinstance(payload, dict):
+        return jsonify(error="Global model payload must be an object"), 400
+    try:
+        round_id = int(payload.get("round", 1))
+        server_url = payload.get("server_url", current_app.config["SERVER_URL"])
+        if not isinstance(server_url, str) or not server_url:
+            raise ValueError("server_url is required")
+        payload["server_url"] = server_url.rstrip("/")
+    except (TypeError, ValueError) as error:
+        return jsonify(error=str(error)), 400
 
     if not state.training_lock.acquire(blocking=False):
         return jsonify(error="Client is already training"), 409
 
     try:
         state.latest_local_training = {}
-        state.expired_rounds.discard(int(payload.get("round", 1)))
+        state.expired_rounds.discard(round_id)
         state.receive_global_model(payload)
-        training_record = run_local_training(
-            state,
-            current_app.config["CLIENT_ID"],
-            payload,
+        state.begin_training(
+            round_id,
+            0,
+            int(payload.get("training_config", {}).get("local_epochs", 1)),
+            malicious=bool(payload.get("round_context", {}).get("malicious", False)),
+            delayed=bool(payload.get("round_context", {}).get("delayed", False)),
         )
-    except TimeoutError as error:
-        state.training_progress.update(status="expired", error=str(error))
-        return jsonify(error=str(error)), 408
-    except (ValueError, KeyError, TypeError, OSError) as error:
-        state.training_progress.update(status="failed", error=str(error))
-        return jsonify(error=str(error)), 400
-    finally:
+        worker = threading.Thread(
+            target=_train_and_submit,
+            args=(current_app._get_current_object(), payload),
+            name=f"client-{current_app.config['CLIENT_ID']}-round-{round_id}",
+            daemon=True,
+        )
+        worker.start()
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+        state.fail_training(round_id, str(error))
         state.training_lock.release()
+        return jsonify(error=str(error)), 400
 
     return jsonify(
-        status="received",
+        status="training",
         client_id=current_app.config["CLIENT_ID"],
+        round=round_id,
         model_version=payload.get("model_version"),
-        training={
-            key: training_record[key]
-            for key in (
-                "round",
-                "client_id",
-                "status",
-                "num_samples",
-                "training_loss",
-            )
-        },
-    )
+    ), 202
 
 
 @experiment_bp.get("/api/model/global")
@@ -107,77 +234,14 @@ def submit_round_update():
     state = current_app.extensions["client_state"]
 
     try:
-        update = build_round_update(
+        response = _submit_round_update(
             state,
             current_app.config["CLIENT_ID"],
             payload,
+            current_app.config["SERVER_URL"],
         )
-    except (ValueError, KeyError) as error:
-        return jsonify(error=str(error)), 409
-
-    if payload.get("malicious") and payload.get("attack_enabled"):
-        peers = state.malicious_peers.get(round_id, [])
-        if not peers:
-            return jsonify(error="Malicious peer information is missing"), 409
-
-        peer_updates = []
-        for peer in peers:
-            peer_id = peer.get("client_id")
-            peer_url = peer.get("url")
-            if (
-                type(peer_id) is not int
-                or peer_id == current_app.config["CLIENT_ID"]
-                or not isinstance(peer_url, str)
-                or not peer_url
-            ):
-                return jsonify(error="Invalid malicious peer information"), 409
-            exchange = post_json(
-                f"{peer_url.rstrip('/')}/api/round/update-share",
-                {
-                    "round": round_id,
-                    "sender_id": current_app.config["CLIENT_ID"],
-                    "update": update,
-                },
-                timeout=60.0,
-                compact=True,
-            )
-            peer_update = exchange.get("peer_update")
-            if peer_update is not None:
-                if (
-                    peer_update.get("client_id") != peer_id
-                    or peer_update.get("round") != round_id
-                ):
-                    return jsonify(error="Malicious peer update identity mismatch"), 409
-                peer_updates.append(peer_update)
-
-        attack_scale = state.attack_scale_by_round.get(round_id, -5.0)
-        try:
-            update = collude_updates(
-                state.global_model,
-                update,
-                peer_updates,
-                attack_scale,
-            )
-        except (ValueError, TypeError, KeyError) as error:
-            return jsonify(error=str(error)), 400
-
-    if (
-        update.get("client_id") != current_app.config["CLIENT_ID"]
-        or update.get("round") != round_id
-    ):
-        return jsonify(error="Submission identity mismatch"), 400
-
-    server_url = payload.get("server_url", current_app.config["SERVER_URL"])
-
-    # 수정: 서버 업데이트 제출 타임아웃 60초
-    response = post_json(
-        f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
-        update,
-        timeout=60.0,
-        compact=True,
-    )
-
-    state.save_submission(round_id, response)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        return jsonify(error=str(error)), 400
 
     return jsonify(
         status="submitted",

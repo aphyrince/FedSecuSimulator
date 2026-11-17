@@ -112,6 +112,7 @@ class ExperimentManager:
         self.rest_client = RestClient()
         self.processed_rounds = set()
         self.advanced_rounds = set()
+        self.single_round_active = False
         self.malicious_clients_by_round = {}
         self.dlg_images_by_round = {}
         self.dlg_labels_by_round = {}
@@ -1937,8 +1938,8 @@ class ExperimentManager:
             round_config,
             timeout=float(round_config["round_timeout"]) + 120.0,
         )
-        if result.get("round") == round_id:
-            self.record_round_result(result, advance=True)
+        if result.get("status") != "started" or result.get("round") != round_id:
+            raise RuntimeError(f"중앙 서버가 라운드 시작을 확인하지 않았습니다: {result}")
 
     def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
         """참가 클라이언트에서 실제 CIFAR-10 단일 샘플을 선택한다.
@@ -2210,6 +2211,12 @@ class ExperimentManager:
             results.sort(key=lambda item: item["round"])
             self.state["round_results"] = results
             self.state["current_round"] = round_id
+            if self.single_round_active and not advance:
+                self.single_round_active = False
+                self.state.update(
+                    status="completed",
+                    message=f"{round_id}번 라운드가 완료되었습니다.",
+                )
 
         if (
             should_advance
@@ -2249,6 +2256,19 @@ class ExperimentManager:
                     ),
                 )
         return round_path
+
+    def record_round_failure(self, result: dict) -> None:
+        round_id = int(result["round"])
+        if result.get("experiment_id") != self.get_config()["experiment_id"]:
+            raise ValueError("다른 실험의 결과입니다.")
+        message = str(result.get("error", "중앙 서버 라운드 집계에 실패했습니다."))
+        with self.lock:
+            self.single_round_active = False
+            self.state.update(
+                status="failed",
+                current_round=round_id,
+                message=f"{round_id}번 라운드 실패: {message}",
+            )
 
     def _save_final_global_model_for_dlg(self, config: dict) -> Path:
         """Export the final server model as a JSON checkpoint accepted by DLG settings."""
@@ -2364,7 +2384,6 @@ class ExperimentManager:
         round_config.setdefault(
             "experiment_manager_url", self.process_manager.manager_url()
         )
-
         # 중앙 서버에 먼저 라운드 설정을 전달한다.
         malicious_clients = self.prepare_malicious_clients(
             round_id, round_config, config
@@ -2373,33 +2392,40 @@ class ExperimentManager:
         if round_config.get("round_type") == "dlg":
             result = self.execute_dlg_round(round_id, round_config)
             with self.lock:
+                self.single_round_active = False
                 self.state.update(
                     current_round=round_id,
                     status="completed",
                     message=f"{round_id}번 DLG 라운드를 시작했습니다.",
                 )
             return result
-        self.rest_client.post_json(
-            f"{self.process_manager.server_url()}/api/round/config", round_config
-        )
-
-        result = self.rest_client.post_json(
-            f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
-            round_config,
-            timeout=float(round_config["round_timeout"]) + 120.0,
-        )
         with self.lock:
-            results = [
-                item
-                for item in self.state["round_results"]
-                if item.get("round") != round_id
-            ]
-            results.append(result)
-            results.sort(key=lambda item: item["round"])
+            self.single_round_active = True
             self.state.update(
-                round_results=results,
+                status="running",
                 current_round=round_id,
-                status="completed",
-                message=f"{round_id}번 라운드가 완료되었습니다.",
+                message=f"{round_id}번 라운드를 시작했습니다.",
             )
+        try:
+            self.rest_client.post_json(
+                f"{self.process_manager.server_url()}/api/round/config", round_config
+            )
+            result = self.rest_client.post_json(
+                f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
+                round_config,
+                timeout=float(round_config["round_timeout"]) + 120.0,
+            )
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            with self.lock:
+                self.single_round_active = False
+                self.state.update(
+                    status="failed",
+                    message=f"{round_id}번 라운드 시작 실패: {error}",
+                )
+            raise
+        if result.get("status") != "started" or result.get("round") != round_id:
+            with self.lock:
+                self.single_round_active = False
+                self.state.update(status="failed", message="중앙 서버가 라운드 시작을 확인하지 않았습니다.")
+            raise RuntimeError(f"중앙 서버가 라운드 시작을 확인하지 않았습니다: {result}")
         return result

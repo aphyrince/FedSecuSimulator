@@ -143,3 +143,9 @@ class ClientState:
         self.submitted_updates[round_id] = submission
         if self.training_progress.get("round") == round_id:
             self.training_progress["status"] = "submitted"
+
+    def fail_training(
+        self, round_id: int, error: str, *, status: str = "failed"
+    ) -> None:
+        if self.training_progress.get("round") == round_id:
+            self.training_progress.update(status=status, error=error)

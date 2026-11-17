@@ -1,0 +1,413 @@
+{
+  "config": {
+    "local_epochs": 1,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "optimizer": "sgd",
+    "momentum": 0.0,
+    "weight_decay": 0.0,
+    "device": "cpu",
+    "num_workers": 0,
+    "torch_threads": 1,
+    "max_train_samples": 20,
+    "max_test_samples": 100,
+    "model_config": {
+      "channels": [
+        32,
+        64
+      ],
+      "hidden_size": 128
+    },
+    "round_timeout": 900,
+    "experiment_id": "security_baseline_01",
+    "experiment_type": "federated",
+    "seed": 42,
+    "num_rounds": 1,
+    "dlg_training_rounds": 5,
+    "dlg_client_id": null,
+    "participation_rate": 1,
+    "malicious_clients": [
+      0,
+      1
+    ],
+    "attack_enabled": false,
+    "attack_scale": -5.0,
+    "round_type": "federated",
+    "dlg_noise_sigma": 0,
+    "dlg_defense_enabled": false,
+    "dlg_iterations": 200,
+    "dlg_image": [],
+    "dlg_label": 0,
+    "dlg_image_path": "",
+    "dlg_label_path": "",
+    "defense": "norm_clipping",
+    "defense_enabled": false,
+    "clip_norm": 1.0,
+    "delay_clients": [],
+    "data_distribution": "iid",
+    "round_configs": [
+      {
+        "participation_rate": 1,
+        "attack_enabled": false,
+        "delay_clients": [],
+        "defense": "norm_clipping",
+        "defense_enabled": false,
+        "round_type": "federated",
+        "dlg_noise_sigma": 0,
+        "dlg_defense_enabled": false
+      }
+    ]
+  },
+  "round_results": [
+    {
+      "accepted_clients": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "accuracy": 0.1,
+      "aggregated_delta": 0.00035305101594037956,
+      "attack_applied": false,
+      "attack_enabled": false,
+      "attack_scale": -5.0,
+      "attack_type": null,
+      "available_clients": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "client_updates": [
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 0,
+          "dataset_fingerprint": "4c91c47c6e056a08b3b4e2d5eaa68f1936eebf0433f53f479c1cc48a9364db55",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0010071304989660577,
+            "scale": 1.0,
+            "update_norm": 0.0010071304989660577
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 1,
+          "dataset_fingerprint": "e5e51493e2e0082e94b8de5b0f1f4a6aa2cadb3e0a4d943ad43e1f32756bf3c3",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0007270635585396065,
+            "scale": 1.0,
+            "update_norm": 0.0007270635585396065
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 2,
+          "dataset_fingerprint": "2c7309e61483b563309692b590eefd1a6d99a0a2ceffcd3ccfc85b194f9cf454",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0008243843268197753,
+            "scale": 1.0,
+            "update_norm": 0.0008243843268197753
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 3,
+          "dataset_fingerprint": "d7371f00f6cbaa143cadf82db145d1a41c564fa6826eacea5a7900356af98805",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0006899021534165449,
+            "scale": 1.0,
+            "update_norm": 0.0006899021534165449
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 4,
+          "dataset_fingerprint": "fd1c8782c4c53b926f3d535815a470b7304fe9def00f052b3c3a9186bcdd4e7a",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0009854502862810081,
+            "scale": 1.0,
+            "update_norm": 0.0009854502862810081
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 5,
+          "dataset_fingerprint": "302589f571b6741441d0b56b289f5f56ef94e16c57c10c7a7bfc48670bb1210a",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0008354498449553378,
+            "scale": 1.0,
+            "update_norm": 0.0008354498449553378
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 6,
+          "dataset_fingerprint": "8c792b0fd2c6f37b50f0d3d3e12c8f7de6d89aa12989f7975bb979a494dcd9f8",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0010771631850873442,
+            "scale": 1.0,
+            "update_norm": 0.0010771631850873442
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 7,
+          "dataset_fingerprint": "f39147175ab9bb091831243f72e7308ecad91f645217cb2e377e457945a8436c",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0008395885704815735,
+            "scale": 1.0,
+            "update_norm": 0.0008395885704815735
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 8,
+          "dataset_fingerprint": "b4551604e533d18cd0c4def45611a127a01492dcbdfe8f11d26a412fe817a16e",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0009973124024497558,
+            "scale": 1.0,
+            "update_norm": 0.0009973124024497558
+          },
+          "valid": true
+        },
+        {
+          "base_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+          "base_model_version": 0,
+          "client_id": 9,
+          "dataset_fingerprint": "c8c19dfd85f4d49d9f4f7ec3b2022f0da3bb30ca9ee65fa639cd02d0bc01c64e",
+          "experiment_id": "security_baseline_01",
+          "malicious": false,
+          "num_samples": 20,
+          "round": 1,
+          "update": {
+            "attack_candidate": false,
+            "definition": "local_final_minus_global_start",
+            "model_delta": 0.0007105984456774327,
+            "scale": 1.0,
+            "update_norm": 0.0007105984456774327
+          },
+          "valid": true
+        }
+      ],
+      "clip_norm": 1.0,
+      "defense": "norm_clipping",
+      "defense_enabled": false,
+      "defense_type": null,
+      "delayed_clients": [],
+      "evaluation": {
+        "accuracy": 0.1,
+        "correct_predictions": 10,
+        "dataset_fingerprint": "4b8aeae40b7ee63beef0b6e120622156589bace5d0b83df95bbf0ab1857b3a4b",
+        "loss": 2.3060554218292237,
+        "metrics": {
+          "top1_accuracy": 0.1
+        },
+        "num_test_samples": 100,
+        "round": 1
+      },
+      "experiment_id": "security_baseline_01",
+      "fedavg_client_weights": {
+        "0": 0.1,
+        "1": 0.1,
+        "2": 0.1,
+        "3": 0.1,
+        "4": 0.1,
+        "5": 0.1,
+        "6": 0.1,
+        "7": 0.1,
+        "8": 0.1,
+        "9": 0.1
+      },
+      "fedavg_samples": 200,
+      "global_model": {
+        "architecture": "small_cnn_v1",
+        "checkpoint": "C:\\Users\\dhlee\\OneDrive\\바탕 화면\\FedSecuSimulator\\results\\security_baseline_01\\checkpoints\\global_0001.pt",
+        "experiment_id": "security_baseline_01",
+        "initial_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+        "model_config": {
+          "channels": [
+            32,
+            64
+          ],
+          "hidden_size": 128
+        },
+        "model_version": 1,
+        "num_parameters": 545098,
+        "preprocessing": {
+          "mean": [
+            0.5,
+            0.5,
+            0.5
+          ],
+          "std": [
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        "seed": 42
+      },
+      "global_model_version": 1,
+      "initial_model_hash": "51a80505464a6768c9e4693f9128c48ddfd46d1afac45e8e6ac4e6688307c532",
+      "loss": 2.3060554218292237,
+      "malicious_accepted": [],
+      "malicious_clients": [],
+      "malicious_selected": [],
+      "model_version": 1,
+      "reason": "model_updated",
+      "round": 1,
+      "selected_clients": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "timestamp": "2026-11-09T04:46:30.675907+00:00",
+      "training_config": {
+        "batch_size": 32,
+        "device": "cpu",
+        "learning_rate": 0.001,
+        "local_epochs": 1,
+        "max_test_samples": 100,
+        "max_train_samples": 20,
+        "momentum": 0.0,
+        "num_workers": 0,
+        "optimizer": "sgd",
+        "torch_threads": 1,
+        "weight_decay": 0.0
+      },
+      "training_datasets": {
+        "0": {
+          "fingerprint": "4c91c47c6e056a08b3b4e2d5eaa68f1936eebf0433f53f479c1cc48a9364db55",
+          "num_samples": 20
+        },
+        "1": {
+          "fingerprint": "e5e51493e2e0082e94b8de5b0f1f4a6aa2cadb3e0a4d943ad43e1f32756bf3c3",
+          "num_samples": 20
+        },
+        "2": {
+          "fingerprint": "2c7309e61483b563309692b590eefd1a6d99a0a2ceffcd3ccfc85b194f9cf454",
+          "num_samples": 20
+        },
+        "3": {
+          "fingerprint": "d7371f00f6cbaa143cadf82db145d1a41c564fa6826eacea5a7900356af98805",
+          "num_samples": 20
+        },
+        "4": {
+          "fingerprint": "fd1c8782c4c53b926f3d535815a470b7304fe9def00f052b3c3a9186bcdd4e7a",
+          "num_samples": 20
+        },
+        "5": {
+          "fingerprint": "302589f571b6741441d0b56b289f5f56ef94e16c57c10c7a7bfc48670bb1210a",
+          "num_samples": 20
+        },
+        "6": {
+          "fingerprint": "8c792b0fd2c6f37b50f0d3d3e12c8f7de6d89aa12989f7975bb979a494dcd9f8",
+          "num_samples": 20
+        },
+        "7": {
+          "fingerprint": "f39147175ab9bb091831243f72e7308ecad91f645217cb2e377e457945a8436c",
+          "num_samples": 20
+        },
+        "8": {
+          "fingerprint": "b4551604e533d18cd0c4def45611a127a01492dcbdfe8f11d26a412fe817a16e",
+          "num_samples": 20
+        },
+        "9": {
+          "fingerprint": "c8c19dfd85f4d49d9f4f7ec3b2022f0da3bb30ca9ee65fa639cd02d0bc01c64e",
+          "num_samples": 20
+        }
+      }
+    }
+  ],
+  "completed_at": "2026-11-09T04:46:30.691450+00:00"
+}

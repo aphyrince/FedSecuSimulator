@@ -1,0 +1,121 @@
+{
+  "config": {
+    "experiment_id": "fedsec-20261108-154905",
+    "experiment_type": "federated",
+    "seed": 42,
+    "num_rounds": 2,
+    "participation_rate": 0.5,
+    "malicious_clients": [
+      0,
+      1
+    ],
+    "attack_enabled": false,
+    "defense": "none",
+    "clip_norm": 1.0,
+    "delay_clients": [
+      5
+    ],
+    "data_distribution": "iid",
+    "round_configs": [
+      {
+        "participation_rate": 0.5,
+        "delay_clients": [
+          5
+        ],
+        "malicious_clients": [
+          0,
+          1
+        ],
+        "defense": "none",
+        "attack_enabled": false
+      },
+      {
+        "participation_rate": 0.6,
+        "delay_clients": [],
+        "malicious_clients": [
+          1
+        ],
+        "defense": "coordinate_median",
+        "attack_enabled": true
+      }
+    ]
+  },
+  "round_results": [
+    {
+      "accepted_clients": [
+        0,
+        2,
+        3,
+        4,
+        7
+      ],
+      "accuracy": 0.607,
+      "aggregated_delta": 0.82,
+      "attack_enabled": false,
+      "defense": "none",
+      "delayed_clients": [],
+      "experiment_id": "fedsec-20261108-154905",
+      "loss": 0.393,
+      "malicious_accepted": [
+        0
+      ],
+      "malicious_clients": [
+        0,
+        1
+      ],
+      "malicious_selected": [
+        0
+      ],
+      "model_version": 1,
+      "reason": "model_updated",
+      "round": 1,
+      "selected_clients": [
+        0,
+        2,
+        3,
+        4,
+        7
+      ],
+      "timestamp": "2026-11-08T06:49:17.968878+00:00"
+    },
+    {
+      "accepted_clients": [
+        1,
+        3,
+        6,
+        7,
+        8,
+        9
+      ],
+      "accuracy": 0.592,
+      "aggregated_delta": 0.82,
+      "attack_enabled": true,
+      "defense": "coordinate_median",
+      "delayed_clients": [],
+      "experiment_id": "fedsec-20261108-154905",
+      "loss": 0.408,
+      "malicious_accepted": [
+        1
+      ],
+      "malicious_clients": [
+        1
+      ],
+      "malicious_selected": [
+        1
+      ],
+      "model_version": 2,
+      "reason": "model_updated",
+      "round": 2,
+      "selected_clients": [
+        1,
+        3,
+        6,
+        7,
+        8,
+        9
+      ],
+      "timestamp": "2026-11-08T06:49:18.137299+00:00"
+    }
+  ],
+  "completed_at": "2026-11-08T06:49:18.233564+00:00"
+}

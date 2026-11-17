@@ -1,0 +1,2 @@
+﻿experiment_id,round,selected_clients,accepted_clients,delayed_clients,malicious_selected,malicious_accepted,attack_enabled,attack_type,attack_scale,malicious_clients,defense,defense_enabled,defense_type,clip_norm,accuracy,loss,reason,timestamp
+security_baseline_01,1,"0,1,2,3,4,5,6,7,8,9","0,1,2,3,4,5,6,7,8,9",,,,False,,-5.0,,norm_clipping,False,,1.0,0.1,2.3060554218292237,model_updated,2026-11-09T04:46:30.675907+00:00

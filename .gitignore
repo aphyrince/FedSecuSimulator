@@ -1,0 +1,34 @@
+# 로컬 파이썬 가상환경
+.venv/
+venv/
+
+# 파이썬 실행 및 테스트 캐시
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# 개인 환경 설정은 제외하고 공유용 예제는 포함
+.env
+.env.*
+!.env.example
+
+# 원본 데이터와 다운로드 파일
+/data/raw/
+# CIFAR-10 dataset
+**/cifar-10-batches-py/
+data/cifar-10-python.tar.gz
+
+# 실험 실행 결과 (모델, 로그, 그래프)
+# 실제 파일은 로컬에 보관
+/results/
+/outputs/
+
+results/security_baseline_01/
+results/security_attack_01/
+results/security_clipping_01/
+results/security_median_01/

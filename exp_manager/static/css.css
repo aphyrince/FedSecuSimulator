@@ -203,6 +203,14 @@ h2, h3 { margin-top: 0; }
     color: #64748b;
     font-size: 13px;
 }
+.linked-config-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+.linked-config-actions button { margin: 0; }
 .template-buttons {
     display: flex;
     flex-wrap: wrap;

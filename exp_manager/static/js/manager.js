@@ -17,9 +17,13 @@ async function startExperiment() {
   await control('/api/experiment/start');
 }
 
-async function saveExperimentConfig(overrides = {}) {
-  const saveButton = document.getElementById('save-config-button');
-  const saveStatus = document.getElementById('config-save-status');
+async function saveExperimentConfig(
+  overrides = {},
+  { buttonId = 'save-config-button', statusId = 'config-save-status' } = {},
+) {
+  const saveButton = document.getElementById(buttonId);
+  const saveStatus = document.getElementById(statusId);
+  const saveButtonLabel = saveButton.textContent;
   const config = {
     experiment_id: document.getElementById('experiment-id').value,
     num_rounds: Number(document.getElementById('rounds').value),
@@ -91,7 +95,7 @@ async function saveExperimentConfig(overrides = {}) {
     return false;
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = '설정 저장';
+    saveButton.textContent = saveButtonLabel;
   }
 
   try {

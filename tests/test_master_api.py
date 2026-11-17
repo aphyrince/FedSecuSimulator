@@ -3,6 +3,7 @@
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import tempfile
 import threading
@@ -134,6 +135,7 @@ class ApiTests(unittest.TestCase):
         starts = []
         submission_before_all_training_finished = []
         client_routes = {False: [], True: []}
+        compact_submissions = {False: 0, True: 0}
         outcomes = {}
         for attack in (False, True):
             server = create_server_app("127.0.0.1", 5000)
@@ -177,14 +179,27 @@ class ApiTests(unittest.TestCase):
                         all_training_finished.set()
                 return result
 
-            def dispatch(url, payload, timeout=3.0):
+            def dispatch(url, payload, timeout=3.0, *, compact=False):
                 parsed = urlsplit(url)
                 if parsed.path in ("/api/round/execute", "/api/round/submit"):
                     client_routes[attack].append((parsed.netloc, parsed.path))
                 if parsed.path == "/api/model/global":
                     global_delivery_barrier.wait(timeout=5)
                 target = server.test_client() if parsed.netloc == "server" else clients[parsed.netloc]
-                response = target.post(parsed.path, json=payload)
+                if compact:
+                    self.assertEqual(parsed.path, "/api/rounds/1/updates")
+                    compact_submissions[attack] += 1
+                    body = json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    response = target.post(
+                        parsed.path,
+                        data=body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    response = target.post(parsed.path, json=payload)
                 if response.status_code >= 400:
                     raise ValueError(f"{parsed.path}: {response.get_json()}")
                 if parsed.netloc == "server" and parsed.path.endswith("/updates"):
@@ -216,6 +231,7 @@ class ApiTests(unittest.TestCase):
             )
             self.assertEqual(observed_execute_clients, expected_execute_clients)
             self.assertEqual(observed_submit_clients, [0, 1, 2])
+            self.assertEqual(compact_submissions[attack], 3)
             self.assertEqual(result["accepted_clients"], [0, 1, 2])
             self.assertEqual(result["attack_applied"], attack)
             client_values = {

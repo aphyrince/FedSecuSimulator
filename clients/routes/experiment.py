@@ -131,6 +131,7 @@ def submit_round_update():
         f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
         update,
         timeout=60.0,
+        compact=True,
     )
 
     state.save_submission(round_id, response)

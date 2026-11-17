@@ -153,9 +153,14 @@ def run_benchmark(
     results = []
     try:
         for client_id in range(client_count):
-            delta_scale = (client_id + 1) * 1e-5
+            generator = torch.Generator(device="cpu").manual_seed(client_id + 42)
             delta = {
-                name: torch.full_like(tensor, delta_scale)
+                name: torch.randn(
+                    tensor.shape,
+                    generator=generator,
+                    dtype=tensor.dtype,
+                )
+                * 1e-5
                 for name, tensor in base_weights.items()
             }
             client_app = Flask(f"diagnostic_client_{client_id}")
@@ -234,10 +239,22 @@ def run_benchmark(
     total_submit = sum(item["submit_seconds"] for item in results)
     duplicate_transfer = sum(item["execute_response_bytes"] for item in results)
     actual_upload = sum(item["bytes"] for item in server_timings)
+    default_json_upload = sum(
+        len(
+            json.dumps(server_app.extensions["round_updates"][ROUND_ID][client_id])
+            .encode("utf-8")
+        )
+        for client_id in range(client_count)
+    )
     print(f"sequential execute time: {total_execute:.3f} s")
     print(f"sequential submit time: {total_submit:.3f} s")
     print(f"unused execute responses: {duplicate_transfer / 1024 / 1024:.2f} MiB")
     print(f"validated update uploads: {actual_upload / 1024 / 1024:.2f} MiB")
+    print(
+        "default JSON size for same updates: "
+        f"{default_json_upload / 1024 / 1024:.2f} MiB "
+        f"(compact saved {(default_json_upload - actual_upload) / 1024 / 1024:.2f} MiB)"
+    )
     print("result: all synthetic submissions passed the production server validation route")
 
 

@@ -1,0 +1,16 @@
+FROM nvcr.io/nvidia/pytorch:25.11-py3
+
+WORKDIR /workspace/FedSecuSimulator
+
+COPY requirements-dgx-spark.txt .
+RUN python -m pip install --no-cache-dir \
+    --constraint /etc/pip/constraint.txt \
+    -r requirements-dgx-spark.txt
+
+COPY . .
+
+RUN python -c "import dotenv, filelock, flask, matplotlib, numpy, PIL, torch, torchvision; assert torch.version.cuda is not None"
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "exp_manager/app.py"]

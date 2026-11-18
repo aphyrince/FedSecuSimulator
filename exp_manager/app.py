@@ -1,6 +1,8 @@
 import argparse
 import atexit
+import signal
 import sys
+import threading
 from pathlib import Path
 
 PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
@@ -15,6 +17,27 @@ from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.process_manager import ProcessManager
 from exp_manager.services.data_distribution import DataDistributionManager
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
+
+
+def _register_sigterm_handler(process_manager, http_server):
+    shutdown_requested = threading.Event()
+
+    def handle_sigterm(_signum, _frame):
+        if shutdown_requested.is_set():
+            return
+        shutdown_requested.set()
+
+        def stop_children_and_server():
+            process_manager.stop()
+            http_server.shutdown()
+
+        threading.Thread(
+            target=stop_children_and_server,
+            name="process-manager-shutdown",
+            daemon=True,
+        ).start()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
 
 
 def create_app(
@@ -69,5 +92,8 @@ if __name__ == "__main__":
     print(
         f"Experiment manager listening on http://{args.host}:{args.port}",
         flush=True,
+    )
+    _register_sigterm_handler(
+        flask_app.extensions["process_manager"], http_server
     )
     http_server.serve_forever()

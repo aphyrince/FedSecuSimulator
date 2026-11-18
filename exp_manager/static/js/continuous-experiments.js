@@ -104,7 +104,6 @@ function continuousDefaults() {
 function setLinkedSharedSettings(config) {
   const values = {
     'linked-shared-rounds': config.num_rounds,
-    'linked-shared-participation': config.participation_rate,
     'linked-shared-seed': config.seed,
     'linked-shared-local-epochs': config.local_epochs,
     'linked-shared-batch-size': config.batch_size,
@@ -128,7 +127,6 @@ function readLinkedSharedSettings() {
   };
   return {
     num_rounds: Number(value('rounds')),
-    participation_rate: Number(value('participation')),
     seed: Number(value('seed')),
     local_epochs: Number(value('local-epochs')),
     batch_size: Number(value('batch-size')),
@@ -309,6 +307,9 @@ function updateContinuousRoundEditor(row) {
     .map((value) => value.trim())
     .filter(Boolean)
     .map(Number);
+  const defaultParticipation = continuousEnvironments.find(
+    (environment) => environment.id === row.dataset.environment,
+  ).participation;
   editor.innerHTML = `
     <table>
       <thead>
@@ -318,11 +319,9 @@ function updateContinuousRoundEditor(row) {
         ${Array.from({ length: count }, (_, index) => {
           const saved = previous[index] || {};
           const participation = saved.participation_rate ??
-            Number(
-              linked
-                ? document.getElementById('linked-shared-participation').value
-                : row.querySelector('.continuous-participation').value,
-            );
+            (linked
+              ? defaultParticipation
+              : Number(row.querySelector('.continuous-participation').value));
           const attack = saved.attack_enabled ??
             row.querySelector('.continuous-attack').checked;
           const delays = saved.delay_clients || defaultDelayClients;
@@ -383,13 +382,16 @@ function readContinuousCases(containerId = 'continuous-experiments') {
         .map((value) => value.trim())
         .filter(Boolean)
         .map(Number);
+    const defaultParticipation = continuousEnvironments.find(
+      (environment) => environment.id === row.dataset.environment,
+    ).participation;
     return {
       name: row.querySelector('.continuous-name').value.trim(),
       environment_template: row.dataset.environment,
       security_scenario: row.dataset.security,
       num_rounds: linked ? shared.num_rounds : Number(row.querySelector('.continuous-rounds').value),
       participation_rate: linked
-        ? shared.participation_rate
+        ? defaultParticipation
         : Number(row.querySelector('.continuous-participation').value),
       delay_clients: row.querySelector('.continuous-delays').value
         .split(',')

@@ -224,7 +224,6 @@ def test_linked_api_and_results_summary_expose_a_single_dashboard():
         assert 'id="continuous-results-rows"' in page
         for setting_id in (
             "rounds",
-            "participation",
             "seed",
             "local-epochs",
             "batch-size",
@@ -236,6 +235,8 @@ def test_linked_api_and_results_summary_expose_a_single_dashboard():
             "malicious-clients",
         ):
             assert f'id="linked-shared-{setting_id}"' in page
+        assert 'id="linked-shared-participation"' not in page
+        assert "참여율은 라운드별 설정에서 조정" in page
 
         manager.state["continuous_experiment"] = None
         batch_dir = Path(temporary) / "integrated-summary"

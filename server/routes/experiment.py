@@ -63,7 +63,13 @@ def set_round_config():
                 model_config=payload.get("model_config"),
             )
             current_app.extensions["global_model"]["experiment_id"] = experiment_id
-        for key in ("round_updates", "update_submission_status", "evaluation_results", "expected_sample_counts"):
+        for key in (
+            "round_updates",
+            "round_update_deltas",
+            "update_submission_status",
+            "evaluation_results",
+            "expected_sample_counts",
+        ):
             current_app.extensions[key] = {}
         current_app.extensions["completed_rounds"] = set()
         current_app.extensions["global_model_history"] = []

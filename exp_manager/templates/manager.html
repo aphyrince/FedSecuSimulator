@@ -327,7 +327,8 @@
         </section>
 
         <div class="experiment-actions">
-          <button onclick="saveExperimentConfig()">설정 저장</button>
+          <button id="save-config-button" type="button" onclick="saveExperimentConfig()">설정 저장</button>
+          <p id="config-save-status" class="config-save-status" role="status" aria-live="polite"></p>
           <button
             id="start-experiment-button"
             class="start"
@@ -579,6 +580,22 @@
               <label>클라이언트별 학습 표본 제한<input id="linked-shared-max-train-samples" type="number" min="1" placeholder="비우면 전체"></label>
               <label>평가 표본 제한<input id="linked-shared-max-test-samples" type="number" min="1" placeholder="비우면 전체"></label>
               <label>악성 클라이언트 후보<input id="linked-shared-malicious-clients" value="0,1" placeholder="쉼표로 구분, 예: 0,1"></label>
+            </div>
+            <div class="linked-config-actions">
+              <button
+                id="save-linked-config-button"
+                type="button"
+                class="secondary"
+                onclick="saveLinkedExperimentConfig()"
+              >
+                공통 설정 저장
+              </button>
+              <p
+                id="linked-config-save-status"
+                class="config-save-status"
+                role="status"
+                aria-live="polite"
+              ></p>
             </div>
           </section>
           <div id="continuous-linked-experiments" class="continuous-case-grid"></div>

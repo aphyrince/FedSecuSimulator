@@ -145,6 +145,23 @@ function readLinkedSharedSettings() {
   };
 }
 
+function linkedExperimentConfigOverrides() {
+  return {
+    ...readLinkedSharedSettings(),
+    experiment_type: 'federated',
+    use_pretrained_global_model: false,
+    pretrained_model_data: '',
+    round_configs: [],
+  };
+}
+
+async function saveLinkedExperimentConfig() {
+  return saveExperimentConfig(linkedExperimentConfigOverrides(), {
+    buttonId: 'save-linked-config-button',
+    statusId: 'linked-config-save-status',
+  });
+}
+
 function renderContinuousCaseSettings(defaults, linked = false) {
   const commonFields = linked ? '' : `
       <label>시드<input class="continuous-seed" type="number" min="0" value="${defaults.seed}"></label>
@@ -730,12 +747,7 @@ async function startContinuousLinkedExperiments() {
     if (document.getElementById('experiment-type').value !== 'federated') {
       selectExperimentTab('federated');
     }
-    const saved = await saveExperimentConfig({
-      experiment_type: 'federated',
-      use_pretrained_global_model: false,
-      pretrained_model_data: '',
-      round_configs: [],
-    });
+    const saved = await saveLinkedExperimentConfig();
     if (!saved) {
       return;
     }

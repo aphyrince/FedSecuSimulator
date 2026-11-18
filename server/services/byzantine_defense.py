@@ -6,7 +6,10 @@ from common.updates import update_delta, with_delta
 from security.defenses import clip_update
 
 def apply_norm_clipping(
-    updates: list[dict[str, Any]], max_norm: float, global_model: dict | None = None
+    updates: list[dict[str, Any]],
+    max_norm: float,
+    global_model: dict | None = None,
+    validated_deltas: dict[int, dict] | None = None,
 ) -> list[dict[str, Any]]:
     """각 업데이트의 model_delta를 최대 노름 이하로 축소한다."""
     clipped = []
@@ -14,7 +17,13 @@ def apply_norm_clipping(
     for update in updates:
         if global_model is not None:
             # 실제 클라이언트의 모델 업데이트 추출
-            delta = update_delta(global_model, update)
+            client_id = update["client_id"]
+            delta = (
+                validated_deltas[client_id]
+                if validated_deltas is not None
+                and client_id in validated_deltas
+                else update_delta(global_model, update)
+            )
 
             # 클리핑 전 전체 L2 노름
             norm = weights_norm(delta)
@@ -28,6 +37,8 @@ def apply_norm_clipping(
 
             # Tensor를 다시 딕셔너리로 변환
             clipped_delta = dict(zip(names, clipped_layers))
+            if validated_deltas is not None:
+                validated_deltas[client_id] = clipped_delta
 
             factor = min(1.0, max_norm / norm) if norm > 0 else 1.0
 

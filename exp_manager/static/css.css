@@ -92,6 +92,15 @@ button:hover { filter: brightness(0.97); }
   margin: 24px 0;
 }
 .experiment-actions button { margin: 0; }
+.config-save-status {
+  align-self: center;
+  margin: 0;
+  font-size: 13px;
+}
+.config-save-status[data-state="success"] { color: #15803d; }
+.config-save-status[data-state="error"] { color: #b91c1c; }
+.config-save-status[data-state="pending"] { color: #475569; }
+.config-save-status[data-state="warning"] { color: #92400e; }
 .data-distribution-panel {
     display: flex;
     align-items: flex-start;
@@ -194,6 +203,14 @@ h2, h3 { margin-top: 0; }
     color: #64748b;
     font-size: 13px;
 }
+.linked-config-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+.linked-config-actions button { margin: 0; }
 .template-buttons {
     display: flex;
     flex-wrap: wrap;

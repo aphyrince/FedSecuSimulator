@@ -17,7 +17,13 @@ async function startExperiment() {
   await control('/api/experiment/start');
 }
 
-async function saveExperimentConfig(overrides = {}) {
+async function saveExperimentConfig(
+  overrides = {},
+  { buttonId = 'save-config-button', statusId = 'config-save-status' } = {},
+) {
+  const saveButton = document.getElementById(buttonId);
+  const saveStatus = document.getElementById(statusId);
+  const saveButtonLabel = saveButton.textContent;
   const config = {
     experiment_id: document.getElementById('experiment-id').value,
     num_rounds: Number(document.getElementById('rounds').value),
@@ -62,20 +68,43 @@ async function saveExperimentConfig(overrides = {}) {
     round_configs: readRoundConfigs(),
   };
   Object.assign(config, overrides);
-  const response = await fetch('/api/experiment/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-  const savedConfig = await response.json();
-  if (!response.ok) {
-    alert(savedConfig.error || '설정을 저장하지 못했습니다.');
-  } else if (savedConfig.pretrained_global_model_loaded) {
-    document.getElementById('pretrained-model-status').textContent =
-      `전역 모델 체크포인트를 저장했습니다 (버전 ${savedConfig.pretrained_global_model_version ?? 0}).`;
+  saveButton.disabled = true;
+  saveButton.textContent = '저장 중...';
+  saveStatus.dataset.state = 'pending';
+  saveStatus.textContent = '설정을 저장하고 있습니다.';
+
+  try {
+    const response = await fetch('/api/experiment/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    const savedConfig = await response.json();
+    if (!response.ok) {
+      throw new Error(savedConfig.error || '설정을 저장하지 못했습니다.');
+    }
+    saveStatus.dataset.state = 'success';
+    saveStatus.textContent = '설정 저장이 완료되었습니다.';
+    if (savedConfig.pretrained_global_model_loaded) {
+      document.getElementById('pretrained-model-status').textContent =
+        `전역 모델 체크포인트를 저장했습니다 (버전 ${savedConfig.pretrained_global_model_version ?? 0}).`;
+    }
+  } catch (error) {
+    saveStatus.dataset.state = 'error';
+    saveStatus.textContent = `설정 저장 실패: ${error.message || '서버에 연결할 수 없습니다.'}`;
+    return false;
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = saveButtonLabel;
   }
-  await refresh();
-  return response.ok;
+
+  try {
+    await refresh();
+  } catch {
+    saveStatus.dataset.state = 'warning';
+    saveStatus.textContent = '설정은 저장됐지만 화면 상태를 갱신하지 못했습니다.';
+  }
+  return true;
 }
 
 function stateText(value) {

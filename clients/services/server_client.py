@@ -6,11 +6,19 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
-def post_json(url: str, payload: dict[str, Any], timeout: float = 3.0) -> dict[str, Any]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float = 3.0,
+    *,
+    compact: bool = False,
+) -> dict[str, Any]:
     """중앙 서버 API에 JSON payload를 전송한다."""
+    separators = (",", ":") if compact else None
+    body = json.dumps(payload, separators=separators).encode("utf-8")
     request = Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )

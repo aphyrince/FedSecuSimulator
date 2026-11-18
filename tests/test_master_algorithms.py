@@ -6,6 +6,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from common.data import CifarRangeDataset
 from common.model import (MODEL_FORMAT, PREPROCESSING, create_model, decode_weights,
                           encode_weights, weights_hash, load_model_checkpoint, save_model_checkpoint)
 from common.training import TrainingSettings
-from common.updates import update_delta
+from common.updates import update_delta, update_deltas
 from clients.services.collusion import collude_updates
 from clients.services.local_training import extract_model_update
 from server.services.byzantine_defense import apply_norm_clipping
@@ -56,6 +57,24 @@ class AlgorithmsTests(unittest.TestCase):
         self.assertEqual(result["client_weights"], {"0": 0.25, "1": 0.75})
         self.assertEqual([self.model, first, second], original)
 
+    def test_fedavg_reuses_prevalidated_deltas(self):
+        updates = [
+            make_update(self.model, 0, {"w": [1.0, 2.0]}, 1),
+            make_update(self.model, 1, {"w": [3.0, 6.0]}, 3),
+        ]
+        validated_deltas = update_deltas(self.model, updates)
+        expected = aggregate_fedavg(self.model, updates)
+
+        with patch(
+            "common.updates.update_delta",
+            side_effect=AssertionError("cached deltas should be reused"),
+        ):
+            actual = aggregate_fedavg(
+                self.model, updates, validated_deltas=validated_deltas
+            )
+
+        self.assertEqual(actual, expected)
+
     def test_unreceived_clients_are_not_in_fedavg_denominator(self):
         update = make_update(self.model, 0, {"w": [2.0, 3.0]}, 10)
         self.assertEqual(aggregate_fedavg(self.model, [update])["global_model"]["weights"], {"w": [12.0, 23.0]})
@@ -84,9 +103,26 @@ class AlgorithmsTests(unittest.TestCase):
 
     def test_clipping_changes_actual_submitted_weights_and_aggregation(self):
         own = make_update(self.model, 0, {"w": [3.0, 4.0]})
-        result = apply_norm_clipping([own], 1.0, global_model=self.model)[0]
+        validated_deltas = update_deltas(self.model, [own])
+        with patch(
+            "server.services.byzantine_defense.update_delta",
+            side_effect=AssertionError("cached deltas should be reused"),
+        ):
+            result = apply_norm_clipping(
+                [own],
+                1.0,
+                global_model=self.model,
+                validated_deltas=validated_deltas,
+            )[0]
         torch.testing.assert_close(decode_weights(result["update"]["values"])["w"], torch.tensor([0.6, 0.8]))
-        torch.testing.assert_close(decode_weights(aggregate_fedavg(self.model, [result])["global_model"]["weights"])["w"], torch.tensor([10.6, 20.8]))
+        with patch(
+            "common.updates.update_delta",
+            side_effect=AssertionError("cached deltas should be reused"),
+        ):
+            aggregated = aggregate_fedavg(
+                self.model, [result], validated_deltas=validated_deltas
+            )
+        torch.testing.assert_close(decode_weights(aggregated["global_model"]["weights"])["w"], torch.tensor([10.6, 20.8]))
         self.assertEqual(own["update"]["values"], {"w": [3.0, 4.0]})
 
     def test_even_coordinate_median_and_sample_weight_difference(self):

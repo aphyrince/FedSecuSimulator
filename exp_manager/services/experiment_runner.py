@@ -112,6 +112,7 @@ class ExperimentManager:
         self.rest_client = RestClient()
         self.processed_rounds = set()
         self.advanced_rounds = set()
+        self.single_round_active = False
         self.malicious_clients_by_round = {}
         self.dlg_images_by_round = {}
         self.dlg_labels_by_round = {}
@@ -204,7 +205,11 @@ class ExperimentManager:
 
     def update_config(self, payload: dict) -> dict:
         with self.lock:
-            if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
                 raise ValueError("실행 중에는 설정을 변경할 수 없습니다.")
             allowed = (
                 "experiment_id",
@@ -448,6 +453,8 @@ class ExperimentManager:
 
     def start(self) -> dict:
         with self.lock:
+            if self.single_round_active:
+                raise RuntimeError("단일 라운드가 진행 중입니다.")
             if self._continuous_is_active():
                 raise RuntimeError("연속 실험이 진행 중입니다.")
             if self.state["status"] == "running":
@@ -496,7 +503,11 @@ class ExperimentManager:
     def start_continuous_experiments(self, cases: list[dict]) -> dict:
         """환경·보안 조합 24개를 별도 ID로 순차 실행한다."""
         with self.lock:
-            if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
             if self.config.get("experiment_type") != "federated":
                 raise ValueError("연속 실험은 내부자 협력공격 모드에서만 사용할 수 있습니다.")
@@ -566,7 +577,11 @@ class ExperimentManager:
     def start_continuous_dlg_experiments(self, payload: dict) -> dict:
         """Run the three DLG cases against one uploaded checkpoint and image."""
         with self.lock:
-            if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
             if not isinstance(payload, dict):
                 raise ValueError("연속 DLG 설정은 객체 형식이어야 합니다.")
@@ -796,7 +811,11 @@ class ExperimentManager:
     ) -> dict:
         """Run 24 FL cases, then three DLG noise cases for each normal FL checkpoint."""
         with self.lock:
-            if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
             if self.config.get("experiment_type") != "federated":
                 raise ValueError("연결 실험은 연합학습 설정에서 시작해야 합니다.")
@@ -1487,7 +1506,11 @@ class ExperimentManager:
             round_configs=[],
         )
         with self.lock:
-            if self.state["status"] in {"running", "stopping"} or self._continuous_is_active():
+            if (
+                self.single_round_active
+                or self.state["status"] in {"running", "stopping"}
+                or self._continuous_is_active()
+            ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
             self.config = {**self.config, **configuration}
             self._validate_config()
@@ -1867,9 +1890,13 @@ class ExperimentManager:
         return self.status()
 
     def reset(self) -> dict:
-        if self.state["status"] in ("running", "stopping") or self._continuous_is_active():
-            raise RuntimeError("실행 중인 실험은 먼저 중단해야 합니다.")
         with self.lock:
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
+                raise RuntimeError("실행 중인 실험은 먼저 중단해야 합니다.")
             self.state.update(
                 status="idle",
                 current_round=0,
@@ -1937,8 +1964,8 @@ class ExperimentManager:
             round_config,
             timeout=float(round_config["round_timeout"]) + 120.0,
         )
-        if result.get("round") == round_id:
-            self.record_round_result(result, advance=True)
+        if result.get("status") != "started" or result.get("round") != round_id:
+            raise RuntimeError(f"중앙 서버가 라운드 시작을 확인하지 않았습니다: {result}")
 
     def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
         """참가 클라이언트에서 실제 CIFAR-10 단일 샘플을 선택한다.
@@ -2210,6 +2237,12 @@ class ExperimentManager:
             results.sort(key=lambda item: item["round"])
             self.state["round_results"] = results
             self.state["current_round"] = round_id
+            if self.single_round_active and not advance:
+                self.single_round_active = False
+                self.state.update(
+                    status="completed",
+                    message=f"{round_id}번 라운드가 완료되었습니다.",
+                )
 
         if (
             should_advance
@@ -2249,6 +2282,19 @@ class ExperimentManager:
                     ),
                 )
         return round_path
+
+    def record_round_failure(self, result: dict) -> None:
+        round_id = int(result["round"])
+        if result.get("experiment_id") != self.get_config()["experiment_id"]:
+            raise ValueError("다른 실험의 결과입니다.")
+        message = str(result.get("error", "중앙 서버 라운드 집계에 실패했습니다."))
+        with self.lock:
+            self.single_round_active = False
+            self.state.update(
+                status="failed",
+                current_round=round_id,
+                message=f"{round_id}번 라운드 실패: {message}",
+            )
 
     def _save_final_global_model_for_dlg(self, config: dict) -> Path:
         """Export the final server model as a JSON checkpoint accepted by DLG settings."""
@@ -2336,70 +2382,81 @@ class ExperimentManager:
 
     def execute_single_round(self, round_id: int, payload: dict) -> dict:
         """관리자 요청을 클라이언트와 중앙 서버 REST API로 전달해 단일 라운드를 실행한다."""
-        if self.state["status"] == "running" or self._continuous_is_active():
-            raise RuntimeError(
-                "전체 실험 실행 중에는 단일 라운드를 실행할 수 없습니다."
-            )
         if round_id < 1:
             raise ValueError("라운드 번호는 1 이상이어야 합니다.")
 
-        config = self.get_config()
-        round_config = dict(payload)
-        round_config.setdefault("experiment_id", config["experiment_id"])
-        round_config.setdefault("round", round_id)
-        if round_config["experiment_id"] != config["experiment_id"]:
-            raise ValueError("실험 ID 변경 후 설정을 먼저 저장하세요.")
-        if (
-            experiment_output_directory(self.results_dir, config)
-            / "rounds"
-            / f"round_{round_id:03d}.json"
-        ).exists():
-            raise RuntimeError("이미 저장된 라운드입니다. 새 실험 ID를 사용하세요.")
-        self._write_experiment_info(config)
-
-        inherited = self._round_config(round_id, config)
-        round_config = {**inherited, **round_config}
-        round_config["seed"] = config["seed"]
-        round_config["nums_clients"] = self.client_count
-        round_config.setdefault(
-            "experiment_manager_url", self.process_manager.manager_url()
-        )
-
-        # 중앙 서버에 먼저 라운드 설정을 전달한다.
-        malicious_clients = self.prepare_malicious_clients(
-            round_id, round_config, config
-        )
-        round_config["malicious_clients"] = malicious_clients
-        if round_config.get("round_type") == "dlg":
-            result = self.execute_dlg_round(round_id, round_config)
-            with self.lock:
-                self.state.update(
-                    current_round=round_id,
-                    status="completed",
-                    message=f"{round_id}번 DLG 라운드를 시작했습니다.",
-                )
-            return result
-        self.rest_client.post_json(
-            f"{self.process_manager.server_url()}/api/round/config", round_config
-        )
-
-        result = self.rest_client.post_json(
-            f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
-            round_config,
-            timeout=float(round_config["round_timeout"]) + 120.0,
-        )
         with self.lock:
-            results = [
-                item
-                for item in self.state["round_results"]
-                if item.get("round") != round_id
-            ]
-            results.append(result)
-            results.sort(key=lambda item: item["round"])
+            if (
+                self.single_round_active
+                or self.state["status"] in ("running", "stopping")
+                or self._continuous_is_active()
+            ):
+                raise RuntimeError(
+                    "다른 실험 또는 라운드가 실행 중입니다."
+                )
+            self.single_round_active = True
             self.state.update(
-                round_results=results,
+                status="running",
                 current_round=round_id,
-                status="completed",
-                message=f"{round_id}번 라운드가 완료되었습니다.",
+                message=f"{round_id}번 라운드를 준비하고 있습니다.",
             )
+            config = deepcopy(self.config)
+
+        try:
+            round_config = dict(payload)
+            round_config.setdefault("experiment_id", config["experiment_id"])
+            round_config.setdefault("round", round_id)
+            if round_config["experiment_id"] != config["experiment_id"]:
+                raise ValueError("실험 ID 변경 후 설정을 먼저 저장하세요.")
+            if (
+                experiment_output_directory(self.results_dir, config)
+                / "rounds"
+                / f"round_{round_id:03d}.json"
+            ).exists():
+                raise RuntimeError("이미 저장된 라운드입니다. 새 실험 ID를 사용하세요.")
+            self._write_experiment_info(config)
+
+            inherited = self._round_config(round_id, config)
+            round_config = {**inherited, **round_config}
+            round_config["seed"] = config["seed"]
+            round_config["nums_clients"] = self.client_count
+            round_config.setdefault(
+                "experiment_manager_url", self.process_manager.manager_url()
+            )
+            malicious_clients = self.prepare_malicious_clients(
+                round_id, round_config, config
+            )
+            round_config["malicious_clients"] = malicious_clients
+
+            if round_config.get("round_type") == "dlg":
+                result = self.execute_dlg_round(round_id, round_config)
+                with self.lock:
+                    self.single_round_active = False
+                    self.state.update(
+                        current_round=round_id,
+                        status="completed",
+                        message=f"{round_id}번 DLG 라운드가 완료되었습니다.",
+                    )
+                return result
+
+            self.rest_client.post_json(
+                f"{self.process_manager.server_url()}/api/round/config", round_config
+            )
+            result = self.rest_client.post_json(
+                f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
+                round_config,
+                timeout=float(round_config["round_timeout"]) + 120.0,
+            )
+            if result.get("status") != "started" or result.get("round") != round_id:
+                raise RuntimeError(
+                    f"중앙 서버가 라운드 시작을 확인하지 않았습니다: {result}"
+                )
+        except Exception as error:
+            with self.lock:
+                self.single_round_active = False
+                self.state.update(
+                    status="failed",
+                    message=f"{round_id}번 라운드 실행 실패: {error}",
+                )
+            raise
         return result

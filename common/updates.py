@@ -40,19 +40,36 @@ def update_delta(global_model: dict, update: dict) -> dict:
     return delta
 
 
-def validate_updates(global_model: dict, updates: list[dict]) -> list[dict]:
+def update_deltas(
+    global_model: dict,
+    updates: list[dict],
+    validated_deltas: dict[int, dict] | None = None,
+) -> dict[int, dict]:
     if not updates:
         raise ValueError("No valid updates to aggregate")
     ids = [item.get("client_id") for item in updates]
     if len(set(ids)) != len(ids):
         raise ValueError("Duplicate client update")
     rounds = set()
+    deltas = {}
     for item in updates:
         positive_int(item.get("round"), "round")
+        client_id = positive_int(item.get("client_id"), "client_id", 0)
+        positive_int(item.get("num_samples"), "num_samples")
+        if item.get("valid") is not True:
+            raise ValueError("Invalid update")
         rounds.add(item["round"])
-        update_delta(global_model, item)
+        if validated_deltas is not None and client_id in validated_deltas:
+            deltas[client_id] = validated_deltas[client_id]
+        else:
+            deltas[client_id] = update_delta(global_model, item)
     if len(rounds) != 1:
         raise ValueError("Mixed update rounds")
+    return deltas
+
+
+def validate_updates(global_model: dict, updates: list[dict]) -> list[dict]:
+    update_deltas(global_model, updates)
     return updates
 
 

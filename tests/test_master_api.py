@@ -834,6 +834,12 @@ class ApiTests(unittest.TestCase):
                     for call in manager.rest_client.post_json.call_args_list
                 )
             )
+            self.assertTrue(
+                all(
+                    call.kwargs["timeout"] == 30.0
+                    for call in manager.rest_client.post_json.call_args_list
+                )
+            )
             peers_by_url = {
                 call.args[0]: call.args[1]["peers"]
                 for call in manager.rest_client.post_json.call_args_list

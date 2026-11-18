@@ -1958,6 +1958,7 @@ class ExperimentManager:
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
             round_config,
+            timeout=30.0,
         )
         result = self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
@@ -2184,6 +2185,7 @@ class ExperimentManager:
                     "peers": peers,
                     "attack_scale": round_config.get("attack_scale", -5.0),
                 },
+                timeout=30.0,
             )
         return selected
 

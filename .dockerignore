@@ -1,0 +1,11 @@
+.git
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+results
+outputs
+data/raw
+source/cifar-10-batches-py
+exp_manager/.env

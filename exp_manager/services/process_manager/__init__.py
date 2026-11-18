@@ -45,6 +45,20 @@ class ProcessManager:
         with urlopen(request, timeout=timeout):
             return
 
+    @staticmethod
+    def _stop_process(process):
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+
     # 실제 자식 프로세스 생성
     def start(self) -> dict:
         with self.lock:
@@ -143,21 +157,11 @@ class ProcessManager:
                 except (URLError, TimeoutError, OSError):
                     pass
 
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-                if process.poll() is None:
-                    process.terminate()
+                self._stop_process(process)
                 self.client_processes.pop(client_id, None)
 
             if self.server_process is not None:
-                try:
-                    self.server_process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-                if self.server_process.poll() is None:
-                    self.server_process.terminate()
+                self._stop_process(self.server_process)
                 self.server_process = None
 
     def status(self) -> dict:

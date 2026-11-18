@@ -29,12 +29,36 @@
 
 ## 설치 및 데이터 준비
 
-프로젝트 루트에서 가상환경과 의존성을 준비합니다.
+### Windows
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+### DGX Spark (Ubuntu 24.04 ARM64)
+
+DGX Spark에서는 NVIDIA PyTorch 컨테이너 `nvcr.io/nvidia/pytorch:25.11-py3`를 사용합니다. 이 이미지는
+CUDA 빌드 PyTorch를 제공하므로 프로젝트의 Windows용 `requirements.txt`를 설치하지 않습니다.
+
+```bash
+docker build -f Dockerfile.dgx-spark -t fedsecusim:dgx-spark .
+cp exp_manager/.env.example exp_manager/.env
+```
+
+`exp_manager/.env`의 `SOURCE_DIR`를 프로젝트 루트 기준 상대 경로로 맞춘 뒤 실행합니다.
+
+```bash
+docker run --rm --gpus all --ipc=host --network host \
+  --env-file exp_manager/.env \
+  -v "$PWD/source:/workspace/FedSecuSimulator/source:ro" \
+  -v "$PWD/data:/workspace/FedSecuSimulator/data:ro" \
+  -v "$PWD/results:/workspace/FedSecuSimulator/results" \
+  fedsecusim:dgx-spark
+```
+
+UI에서 연산 장치를 `CUDA` 또는 `자동`으로 선택합니다. 원격 브라우저 접속은 SSH 포트 포워딩을 권장합니다.
+Docker 이미지에 CUDA 빌드 PyTorch 및 필수 패키지가 있는지 빌드 시 확인합니다.
 
 공식 CIFAR-10 Python 배치를 다음 구조로 둡니다.
 

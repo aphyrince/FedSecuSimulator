@@ -117,6 +117,7 @@ def _maybe_schedule_round_aggregation(app, round_id: int) -> None:
 
 def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
     with app.app_context():
+        callback_url = payload.get("experiment_manager_url")
         try:
             response = execute_result(round_id, payload)
             if response.status_code >= 400:
@@ -132,18 +133,17 @@ def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
                 message=str(error),
             )
             _finish_round(app, round_id)
-            payload = {
+            failure_payload = {
                 "round": round_id,
                 "experiment_id": payload.get("experiment_id"),
                 "status": "failed",
                 "error": str(error),
             }
-            callback_url = payload.get("experiment_manager_url")
             if callback_url:
                 try:
                     _post_json(
                         callback_url.rstrip("/") + "/api/results/round",
-                        payload,
+                        failure_payload,
                         timeout=30.0,
                     )
                 except (OSError, ValueError, URLError):
@@ -165,6 +165,11 @@ def _deliver_round_models(app, round_id: int) -> None:
             for client_id in selected_ids
             if client_id not in delay_ids
         ]
+        active_malicious_ids = {
+            client["client_id"]
+            for client in selected_clients
+            if attack_enabled and client["client_id"] in malicious_ids
+        }
         global_model = app.extensions["global_model"]
         deadline = datetime.fromisoformat(
             app.extensions["update_deadlines"][round_id]
@@ -183,6 +188,14 @@ def _deliver_round_models(app, round_id: int) -> None:
 
         def deliver(client):
             client_id = client["client_id"]
+            malicious_peers = [
+                {
+                    "client_id": peer_id,
+                    "url": clients[peer_id]["url"],
+                }
+                for peer_id in sorted(active_malicious_ids)
+                if peer_id != client_id
+            ] if client_id in active_malicious_ids else []
             return _post_json(
                 f"{client['url']}/api/model/global",
                 {
@@ -196,6 +209,8 @@ def _deliver_round_models(app, round_id: int) -> None:
                         "selected": True,
                         "malicious": attack_enabled and client_id in malicious_ids,
                         "delayed": client_id in delay_ids,
+                        "malicious_peers": malicious_peers,
+                        "attack_scale": config.get("attack_scale", -5.0),
                     },
                 },
                 timeout=max(

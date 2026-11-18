@@ -9,12 +9,15 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
+from types import SimpleNamespace
 
+from flask import Response
 import torch
 
 from clients.app import create_app as create_client_app
+from clients.routes.experiment import _submit_round_update
 from clients.services.client_state import ClientState
 from clients.services.training_service import build_round_update
 from common.updates import update_delta
@@ -22,6 +25,7 @@ from common.model import create_model, decode_weights, encode_weights, weights_h
 from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.process_manager import ProcessManager
 from server.app import create_app as create_server_app
+from server.routes.aggregation import _deliver_round_models, _run_round_aggregation
 from test_master_algorithms import make_update, vector_model
 
 
@@ -41,6 +45,156 @@ class ApiTests(unittest.TestCase):
         state.global_model = vector_model()
         with self.assertRaises(ValueError):
             build_round_update(state, 0, {"round": 1})
+
+    def test_malicious_peer_share_waits_when_peer_training_is_incomplete(self):
+        app = create_client_app(1, 5102)
+        state = app.extensions["client_state"]
+        state.set_malicious_peers(
+            1, [{"client_id": 0, "url": "http://client0"}]
+        )
+        incoming_update = {"round": 1, "client_id": 0, "update": {"values": [1.0]}}
+
+        response = app.test_client().post(
+            "/api/round/update-share",
+            json={
+                "round": 1,
+                "sender_id": 0,
+                "update": incoming_update,
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["status"], "pending")
+        self.assertIsNone(response.json["peer_update"])
+        self.assertEqual(
+            state.received_malicious_updates[1][0], incoming_update
+        )
+
+    def test_malicious_submission_polls_until_peer_update_is_ready(self):
+        own_update = {"round": 1, "client_id": 0, "update": {}}
+        peer_update = {"round": 1, "client_id": 1, "update": {}}
+        attacked_update = {"round": 1, "client_id": 0, "update": {}}
+        state = SimpleNamespace(
+            global_model={},
+            malicious_peers={},
+            attack_scale_by_round={1: -5.0},
+            save_submission=lambda *_args: None,
+        )
+        responses = [
+            {"status": "pending", "peer_update": None},
+            {"status": "ready", "peer_update": peer_update},
+            {"status": "submitted"},
+        ]
+        with patch(
+            "clients.routes.experiment.build_round_update",
+            return_value=own_update,
+        ), patch(
+            "clients.routes.experiment.post_json",
+            side_effect=responses,
+        ) as post_json, patch(
+            "clients.routes.experiment.collude_updates",
+            return_value=attacked_update,
+        ) as collude, patch("clients.routes.experiment.time.sleep"):
+            result = _submit_round_update(
+                state,
+                0,
+                {
+                    "round": 1,
+                    "malicious": True,
+                    "attack_enabled": True,
+                    "malicious_peers": [
+                        {"client_id": 1, "url": "http://client1"}
+                    ],
+                    "update_deadline": (
+                        datetime.now(timezone.utc) + timedelta(seconds=5)
+                    ).isoformat(),
+                    "server_url": "http://server",
+                },
+                "http://server",
+            )
+
+        self.assertEqual(result, {"status": "submitted"})
+        self.assertEqual(post_json.call_count, 3)
+        self.assertIn("update", post_json.call_args_list[0].args[1])
+        self.assertEqual(
+            post_json.call_args_list[1].args[1],
+            {"round": 1, "sender_id": 0, "poll": True},
+        )
+        collude.assert_called_once_with({}, own_update, [peer_update], -5.0)
+
+    def test_single_selected_malicious_client_uses_explicit_single_client_attack(self):
+        own_update = {"round": 1, "client_id": 0, "update": {}}
+        attacked_update = {"round": 1, "client_id": 0, "update": {}}
+        state = SimpleNamespace(
+            global_model={},
+            malicious_peers={},
+            attack_scale_by_round={1: -5.0},
+            save_submission=lambda *_args: None,
+        )
+        with patch(
+            "clients.routes.experiment.build_round_update",
+            return_value=own_update,
+        ), patch(
+            "clients.routes.experiment.post_json",
+            return_value={"status": "submitted"},
+        ) as post_json, patch(
+            "clients.routes.experiment.collude_updates",
+            return_value=attacked_update,
+        ) as collude:
+            _submit_round_update(
+                state,
+                0,
+                {
+                    "round": 1,
+                    "malicious": True,
+                    "attack_enabled": True,
+                    "malicious_peers": [],
+                    "server_url": "http://server",
+                },
+                "http://server",
+            )
+
+        post_json.assert_called_once()
+        collude.assert_called_once_with({}, own_update, [], -5.0)
+
+    def test_malicious_peer_timeout_does_not_submit_a_single_sided_attack(self):
+        own_update = {"round": 1, "client_id": 0, "update": {}}
+        state = SimpleNamespace(
+            global_model={},
+            malicious_peers={},
+            attack_scale_by_round={1: -5.0},
+            save_submission=lambda *_args: None,
+        )
+        with patch(
+            "clients.routes.experiment.build_round_update",
+            return_value=own_update,
+        ), patch(
+            "clients.routes.experiment.post_json",
+            return_value={"status": "pending", "peer_update": None},
+        ) as post_json, patch(
+            "clients.routes.experiment.collude_updates"
+        ) as collude, patch("clients.routes.experiment.time.sleep"):
+            with self.assertRaises(TimeoutError):
+                _submit_round_update(
+                    state,
+                    0,
+                    {
+                        "round": 1,
+                        "malicious": True,
+                        "attack_enabled": True,
+                        "malicious_peers": [
+                            {"client_id": 1, "url": "http://client1"}
+                        ],
+                        "update_deadline": (
+                            datetime.now(timezone.utc) - timedelta(seconds=1)
+                        ).isoformat(),
+                        "server_url": "http://server",
+                    },
+                    "http://server",
+                )
+
+        post_json.assert_not_called()
+        collude.assert_not_called()
 
     def test_client_status_reports_training_progress_and_remaining_data(self):
         app = create_client_app(0, 5101)
@@ -138,6 +292,7 @@ class ApiTests(unittest.TestCase):
         submission_before_all_training_finished = []
         client_routes = {False: [], True: []}
         direct_peer_exchanges = {False: [], True: []}
+        pending_peer_responses = {False: 0, True: 0}
         compact_submissions = {False: 0, True: 0}
         outcomes = {}
         for attack in (False, True):
@@ -173,10 +328,17 @@ class ApiTests(unittest.TestCase):
             training_lock = threading.Lock()
             all_training_finished = threading.Event()
             first_update_submitted = threading.Event()
+            second_malicious_training_started = threading.Event()
+            allow_second_malicious_training = threading.Event()
 
             def fake_train(global_model, dataset_range, training_config, round_id, client_id, **kwargs):
                 if client_id in (0, 1):
                     self.assertTrue(first_update_submitted.wait(timeout=5))
+                if attack and client_id == 1:
+                    second_malicious_training_started.set()
+                    self.assertTrue(allow_second_malicious_training.wait(timeout=5))
+                if attack and client_id == 0:
+                    self.assertTrue(second_malicious_training_started.wait(timeout=5))
                 self.assertEqual((training_config["local_epochs"], training_config["batch_size"], training_config["learning_rate"]), (3, 7, 0.02))
                 starts.append((attack, client_id, weights_hash(global_model["weights"])))
                 base = decode_weights(global_model["weights"])
@@ -197,7 +359,7 @@ class ApiTests(unittest.TestCase):
                 parsed = urlsplit(url)
                 if parsed.path in ("/api/round/execute", "/api/round/submit"):
                     client_routes[attack].append((parsed.netloc, parsed.path))
-                if parsed.path == "/api/round/update-share":
+                if parsed.path == "/api/round/update-share" and "update" in payload:
                     direct_peer_exchanges[attack].append(
                         (payload.get("sender_id"), parsed.netloc)
                     )
@@ -224,6 +386,12 @@ class ApiTests(unittest.TestCase):
                     response = target.post(parsed.path, json=payload)
                 if response.status_code >= 400:
                     raise ValueError(f"{parsed.path}: {response.get_json()}")
+                if (
+                    parsed.path == "/api/round/update-share"
+                    and response.status_code == 202
+                ):
+                    pending_peer_responses[attack] += 1
+                    allow_second_malicious_training.set()
                 if parsed.netloc == "server" and parsed.path.endswith("/updates"):
                     submission_before_all_training_finished.append(
                         not all_training_finished.is_set()
@@ -269,6 +437,8 @@ class ApiTests(unittest.TestCase):
                 sorted(direct_peer_exchanges[attack]),
                 [(0, "client1"), (1, "client0")] if attack else [],
             )
+            if attack:
+                self.assertGreaterEqual(pending_peer_responses[attack], 1)
             self.assertEqual(result["accepted_clients"], [0, 1, 2])
             self.assertEqual(result["attack_applied"], attack)
             client_values = {
@@ -299,6 +469,53 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(outcomes[False]["initial_model_hash"], outcomes[True]["initial_model_hash"])
         self.assertTrue(any(submission_before_all_training_finished))
 
+    def test_round_delivery_includes_only_active_malicious_peers(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.extensions["round_payloads"][1] = {
+            "attack_enabled": True,
+            "malicious_clients": [0, 1],
+            "attack_scale": -5.0,
+            "delay_clients": [],
+            "server_url": "http://server",
+            "round_timeout": 30.0,
+            "local_epochs": 1,
+        }
+        app.extensions["selected_clients"][1] = [0]
+        app.extensions["clients"] = {
+            client_id: {
+                "client_id": client_id,
+                "url": f"http://client{client_id}",
+            }
+            for client_id in (0, 1)
+        }
+        app.extensions["global_model"] = {"weights": {}}
+        app.extensions["update_deadlines"][1] = (
+            datetime.now(timezone.utc) + timedelta(seconds=30)
+        ).isoformat()
+        app.extensions["update_submission_status"][1] = {
+            0: {"status": "waiting"}
+        }
+        app.extensions["round_submission_clients"][1] = {0}
+        app.extensions["round_updates"][1] = {}
+        app.extensions["round_delivery_complete"][1] = False
+        app.extensions["round_deadline_reached"][1] = False
+        delivered_payloads = []
+
+        with patch(
+            "server.routes.aggregation._post_json",
+            side_effect=lambda _url, payload, **_kwargs: delivered_payloads.append(
+                payload
+            )
+            or {},
+        ):
+            _deliver_round_models(app, 1)
+
+        self.assertEqual(len(delivered_payloads), 1)
+        self.assertEqual(
+            delivered_payloads[0]["round_context"]["malicious_peers"], []
+        )
+        self.assertTrue(delivered_payloads[0]["round_context"]["malicious"])
+
     def test_failed_evaluation_returns_failure_without_fake_accuracy_or_model_commit(self):
         app = create_server_app("127.0.0.1", 5000)
         app.config["RESULTS_DIR"] = str(self.root)
@@ -322,6 +539,43 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("accuracy", response.get_json())
         self.assertEqual(app.extensions["global_model"], model)
         self.assertFalse(app.extensions["round_results"])
+
+    def test_async_aggregation_failure_notifies_experiment_manager(self):
+        app = create_server_app("127.0.0.1", 5000)
+        error_response = Response(
+            '{"error":"forced aggregation failure"}',
+            status=500,
+            mimetype="application/json",
+        )
+        with patch(
+            "server.routes.aggregation.execute_result",
+            return_value=error_response,
+        ), patch("server.routes.aggregation._post_json") as callback, patch.object(
+            app.logger, "exception"
+        ):
+            _run_round_aggregation(
+                app,
+                1,
+                {
+                    "experiment_id": "failed_round",
+                    "experiment_manager_url": "http://manager",
+                },
+            )
+
+        callback.assert_called_once()
+        self.assertEqual(
+            callback.call_args.args[0],
+            "http://manager/api/results/round",
+        )
+        self.assertEqual(
+            callback.call_args.args[1],
+            {
+                "round": 1,
+                "experiment_id": "failed_round",
+                "status": "failed",
+                "error": "forced aggregation failure",
+            },
+        )
 
     def test_fewer_than_three_updates_are_logged_without_model_update(self):
         app = create_server_app("127.0.0.1", 5000)
@@ -642,6 +896,59 @@ class ApiTests(unittest.TestCase):
             manager.update_config({"learning_rate": 0.5})
         with self.assertRaises(RuntimeError):
             manager.start()
+
+    def test_single_round_reserves_configuration_before_preparation(self):
+        process_manager = Mock()
+        process_manager.manager_url.return_value = "http://manager"
+        process_manager.server_url.return_value = "http://server"
+        manager = ExperimentManager(process_manager, self.root, 10)
+        manager.config["experiment_id"] = "single_round_reservation"
+        entered_prepare = threading.Event()
+        continue_prepare = threading.Event()
+        worker_errors = []
+
+        def pause_prepare(*_args):
+            entered_prepare.set()
+            self.assertTrue(continue_prepare.wait(timeout=5))
+            return []
+
+        def execute_round():
+            try:
+                manager.execute_single_round(1, {})
+            except Exception as error:
+                worker_errors.append(error)
+
+        with patch.object(
+            manager.rest_client,
+            "post_json",
+            side_effect=[{}, {"status": "started", "round": 1}],
+        ), patch.object(
+            manager,
+            "prepare_malicious_clients",
+            side_effect=pause_prepare,
+        ):
+            worker = threading.Thread(
+                target=execute_round,
+            )
+            worker.start()
+            self.assertTrue(entered_prepare.wait(timeout=5))
+            self.assertTrue(manager.single_round_active)
+            self.assertEqual(manager.state["status"], "running")
+            with self.assertRaises(ValueError):
+                manager.update_config({"learning_rate": 0.02})
+            continue_prepare.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(worker_errors, [])
+        manager.record_round_failure(
+            {
+                "round": 1,
+                "experiment_id": "single_round_reservation",
+                "error": "test cleanup",
+            }
+        )
+        self.assertFalse(manager.single_round_active)
 
     def test_model_configuration_cannot_reset_a_running_round(self):
         app = create_server_app("127.0.0.1", 5000)

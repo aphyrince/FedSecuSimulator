@@ -25,7 +25,11 @@ from common.model import create_model, decode_weights, encode_weights, weights_h
 from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.process_manager import ProcessManager
 from server.app import create_app as create_server_app
-from server.routes.aggregation import _deliver_round_models, _run_round_aggregation
+from server.routes.aggregation import (
+    _deliver_round_models,
+    _finish_round,
+    _run_round_aggregation,
+)
 from test_master_algorithms import make_update, vector_model
 
 
@@ -644,6 +648,30 @@ class ApiTests(unittest.TestCase):
             app.extensions["update_submission_attempts"][1][0]["reason"],
             "num_samples must be an integer >= 1",
         )
+
+    def test_completed_round_releases_large_update_weights_but_keeps_summary(self):
+        app = create_server_app("127.0.0.1", 5000)
+        app.extensions["round_updates"][1] = {
+            0: {
+                "round": 1,
+                "client_id": 0,
+                "num_samples": 10,
+                "local_model": {
+                    "architecture": "small_cnn_v1",
+                    "weights": {"layer": [1.0, 2.0]},
+                },
+                "update": {"values": {"layer": [0.1, 0.2]}, "update_norm": 0.3},
+            }
+        }
+        app.extensions["round_update_deltas"][1] = {0: {"layer": torch.tensor([0.1, 0.2])}}
+
+        _finish_round(app, 1)
+
+        update = app.extensions["round_updates"][1][0]
+        self.assertEqual(update["num_samples"], 10)
+        self.assertEqual(update["local_model"], {"architecture": "small_cnn_v1"})
+        self.assertEqual(update["update"], {"update_norm": 0.3})
+        self.assertNotIn(1, app.extensions["round_update_deltas"])
 
     def test_concurrent_submissions_match_server_and_manager_status(self):
         client_count = 10

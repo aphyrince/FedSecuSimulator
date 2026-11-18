@@ -51,9 +51,33 @@ def _finish_round(app, round_id: int) -> None:
     with app.extensions.setdefault("round_completion_lock", threading.Lock()):
         app.extensions.setdefault("completed_rounds", set()).add(round_id)
         app.extensions.setdefault("round_update_deltas", {}).pop(round_id, None)
+        updates = app.extensions.setdefault("round_updates", {}).get(round_id, {})
+        app.extensions["round_updates"][round_id] = {
+            client_id: _compact_client_update(update)
+            for client_id, update in updates.items()
+        }
         if app.extensions.get("active_round_id") == round_id:
             app.extensions["active_round_id"] = None
     _cancel_round_timer(app, round_id)
+
+
+def _compact_client_update(update: dict) -> dict:
+    compact = {
+        key: value
+        for key, value in update.items()
+        if key not in {"local_model", "update"}
+    }
+    local_model = update.get("local_model")
+    if isinstance(local_model, dict):
+        compact["local_model"] = {
+            key: value for key, value in local_model.items() if key != "weights"
+        }
+    update_data = update.get("update")
+    if isinstance(update_data, dict):
+        compact["update"] = {
+            key: value for key, value in update_data.items() if key != "values"
+        }
+    return compact
 
 
 def _maybe_schedule_round_aggregation(app, round_id: int) -> None:

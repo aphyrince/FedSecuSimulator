@@ -143,7 +143,7 @@ def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
     with app.app_context():
         callback_url = payload.get("experiment_manager_url")
         try:
-            response = execute_result(round_id, payload)
+            response = current_app.make_response(execute_result(round_id, payload))
             if response.status_code >= 400:
                 body = response.get_json(silent=True) or {}
                 raise RuntimeError(

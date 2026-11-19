@@ -13,7 +13,6 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from types import SimpleNamespace
 
-from flask import Response
 import torch
 
 from clients.app import create_app as create_client_app
@@ -546,14 +545,9 @@ class ApiTests(unittest.TestCase):
 
     def test_async_aggregation_failure_notifies_experiment_manager(self):
         app = create_server_app("127.0.0.1", 5000)
-        error_response = Response(
-            '{"error":"forced aggregation failure"}',
-            status=500,
-            mimetype="application/json",
-        )
         with patch(
             "server.routes.aggregation.execute_result",
-            return_value=error_response,
+            return_value=({"error": "forced aggregation failure"}, 500),
         ), patch("server.routes.aggregation._post_json") as callback, patch.object(
             app.logger, "exception"
         ):

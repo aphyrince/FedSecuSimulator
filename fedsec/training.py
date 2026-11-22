@@ -75,7 +75,8 @@ def train_local_model(global_model: nn.Module, dataset: Dataset, settings: Train
 
 
 def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: TrainingSettings,
-                          *, seed: int = 42) -> EvaluationResult:
+                          *, seed: int = 42,
+                          record_matches: Callable[[torch.Tensor], None] | None = None) -> EvaluationResult:
     device = setup_runtime(settings, seed)
     dataset = _limited(dataset, settings.max_test_samples)
     loader = DataLoader(dataset, batch_size=settings.batch_size, shuffle=False, num_workers=settings.num_workers)
@@ -93,6 +94,8 @@ def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: T
                 raise ValueError("Evaluation loss is NaN/Infinity")
             loss_sum += loss.item()
             matches = (logits.argmax(1) == labels).cpu()
+            if record_matches is not None:
+                record_matches(matches)
             labels = labels.cpu()
             class_samples += torch.bincount(labels, minlength=10)
             class_correct += torch.bincount(labels[matches], minlength=10)

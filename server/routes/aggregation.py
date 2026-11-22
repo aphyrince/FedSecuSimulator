@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import random
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
@@ -16,13 +17,14 @@ from server.services.model_evaluation import evaluate_global_model
 from server.services.byzantine_defense import apply_norm_clipping
 from common.model import (
     decode_weights,
+    decode_wire_weights,
     positive_int,
     save_model_checkpoint,
     weights_hash,
     weights_norm,
 )
 from common.updates import update_delta, update_deltas
-from common.training import TrainingSettings
+from common.training import TrainingSettings, sequential_round_schedule
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
@@ -294,6 +296,7 @@ def receive_client_update(round_id: int):
     round_status = statuses.setdefault(round_id, {})
     attempts = current_app.extensions.setdefault("update_submission_attempts", {})
     round_attempts = attempts.setdefault(round_id, [])
+    schedule = current_app.extensions.get("round_payloads", {}).get(round_id, {}).get("sequential_schedule")
 
     def reject(reason: str, status_code: int):
         client_id = payload.get("client_id")
@@ -305,8 +308,8 @@ def receive_client_update(round_id: int):
             "timestamp": now,
         })
         if type(client_id) is int and client_id >= 0:
-            if round_status.get(client_id, {}).get("status") != "received":
-                previous = round_status.get(client_id, {})
+            previous = round_status.get(client_id, {})
+            if previous.get("status") not in {"received", "accepted"} and not previous.get("received_at"):
                 round_status[client_id] = {
                     **previous,
                     "status": "rejected",
@@ -345,6 +348,11 @@ def receive_client_update(round_id: int):
     if "update" not in payload or not isinstance(payload["update"], dict):
         return reject("Invalid update payload", 400)
     try:
+        if "tensor_encoding" in payload:
+            if schedule is None or payload["tensor_encoding"] != "base64_float32":
+                raise ValueError("Unsupported update tensor encoding")
+            payload["local_model"]["weights"] = decode_wire_weights(payload["local_model"]["weights"])
+            payload["update"]["values"] = decode_wire_weights(payload["update"]["values"])
         delta = update_delta(current_app.extensions["global_model"], payload)
         expected = current_app.extensions.get("expected_sample_counts", {}).get(round_id, {}).get(int(client_id))
         if expected is not None and num_samples != expected:
@@ -375,20 +383,30 @@ def receive_client_update(round_id: int):
         round_updates = updates.setdefault(round_id, {})
         if int(client_id) in round_updates:
             return reject("Duplicate client update", 409)
-        round_updates[int(client_id)] = payload
-        current_app.extensions.setdefault("round_update_deltas", {}).setdefault(
-            round_id, {}
-        )[int(client_id)] = delta
+        virtual_late = schedule is not None and client_id in schedule["virtual_late_clients"]
+        compact = _compact_client_update(payload) if schedule is not None else payload
+        if schedule is not None:
+            compact["update"]["update_norm"] = weights_norm(delta)
+            compact["local_model_version"] = payload["local_model"].get("model_version")
+            compact["local_model_hash"] = weights_hash(payload["local_model"]["weights"])
+        if not virtual_late:
+            round_updates[client_id] = compact
+            current_app.extensions.setdefault("round_update_deltas", {}).setdefault(round_id, {})[client_id] = delta
         received_at = datetime.now(timezone.utc).isoformat()
-        round_status[int(client_id)] = {
-            **round_status.get(int(client_id), {}),
-            "status": "received",
+        disposition = {"status": "received"}
+        if virtual_late:
+            disposition = {"status": "excluded", "reason": "virtual_deadline_exceeded"}
+        round_status[client_id] = {
+            **round_status.get(client_id, {}),
+            **disposition,
             "num_samples": num_samples,
             "received_at": received_at,
         }
+        if virtual_late:
+            round_status[client_id].update(excluded_at=received_at, client_update=compact)
         round_attempts.append({
-            "client_id": int(client_id),
-            "status": "received",
+            "client_id": client_id,
+            **disposition,
             "num_samples": num_samples,
             "timestamp": received_at,
         })
@@ -396,7 +414,7 @@ def receive_client_update(round_id: int):
         current_app._get_current_object(), round_id
     )
     return jsonify(
-        status="received",
+        **disposition,
         round=round_id,
         client_id=int(client_id),
         count=len(round_updates),
@@ -435,9 +453,8 @@ def receive_client_round_failure(round_id: int):
         deadline = current_app.extensions.get("update_deadlines", {}).get(round_id)
         if deadline and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline):
             return jsonify(error="Submission deadline expired"), 408
-        if client_id in current_app.extensions.get("round_updates", {}).get(
-            round_id, {}
-        ):
+        tracked = current_app.extensions.get("update_submission_status", {}).get(round_id, {})
+        if client_id in current_app.extensions.get("round_updates", {}).get(round_id, {}) or tracked.get(client_id, {}).get("received_at"):
             return jsonify(error="Client update was already received"), 409
         now = datetime.now(timezone.utc).isoformat()
         reason = str(payload.get("reason", "client_failure"))
@@ -484,8 +501,8 @@ def get_update_submission_status(round_id: int):
     selected = current_app.extensions.get("selected_clients", {}).get(round_id, [])
     received = current_app.extensions.get("round_updates", {}).get(round_id, {})
     tracked = current_app.extensions.get("update_submission_status", {}).get(round_id, {})
-    submitted = sorted(received)
-    missing = sorted(set(selected) - set(received))
+    submitted = sorted(set(received) | {client_id for client_id, row in tracked.items() if row.get("received_at")})
+    missing = sorted(set(selected) - set(submitted))
     expired = sorted(
         client_id
         for client_id, status in tracked.items()
@@ -500,6 +517,24 @@ def get_update_submission_status(round_id: int):
         updates=received,
         status=tracked,
     )
+
+
+@aggregation_bp.post("/api/rounds/<int:round_id>/close")
+def close_sequential_round(round_id: int):
+    """Allow FedAvg to run once the serial client runner has finished submitting."""
+    app = current_app._get_current_object()
+    state = app.extensions
+    request_body = request.get_json(silent=True) or {}
+    with state["round_completion_lock"]:
+        config = state["round_payloads"].get(round_id, {})
+        if (
+            config.get("client_execution") != "sequential"
+            or request_body.get("experiment_id") != config.get("experiment_id")
+        ):
+            return jsonify(error="No matching sequential round"), 409
+        state["round_delivery_complete"][round_id] = True
+    _maybe_schedule_round_aggregation(app, round_id)
+    return jsonify(status="closed", round=round_id)
 
 
 @aggregation_bp.post("/api/rounds/<int:round_id>/timeout")
@@ -600,6 +635,7 @@ def start_round(round_id: int):
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
     config["round"] = round_id
+    started_clock = time.monotonic()
     progress = current_app.extensions.setdefault(
         "round_progress", {"round": None, "phase": "idle"}
     )
@@ -634,21 +670,53 @@ def start_round(round_id: int):
         progress.update(phase="failed", message="전역 모델이 초기화되지 않았습니다.")
         return jsonify(error="Global model is not initialized"), 409
 
+    sequential = config.get("client_execution") == "sequential"
+    assigned = {}
+    schedule = None
+    if sequential:
+        try:
+            assigned = {
+                positive_int(row["client_id"], "client_id", 0): positive_int(row["num_samples"], "num_samples")
+                for row in config["assigned_samples"]
+            }
+            if (
+                len(assigned) != len(config["assigned_samples"])
+                or set(assigned) != {client["client_id"] for client in registered}
+                or config.get("nums_clients") != len(registered)
+                or any(client.get("execution") != "sequential" for client in registered)
+                or config.get("experiment_id") != global_model.get("experiment_id")
+            ):
+                raise ValueError("Sequential data assignments must match the registered clients and model")
+            schedule = sequential_round_schedule(config, assigned)
+            if config.get("sequential_schedule", schedule) != schedule:
+                raise ValueError("Sequential round does not match the saved schedule")
+        except (ValueError, TypeError, KeyError) as error:
+            return jsonify(error=str(error)), 400
+        registered.sort(key=lambda client: client["client_id"])
+    elif any(client.get("execution") == "sequential" for client in registered):
+        return jsonify(error="Sequential clients require a sequential round"), 409
+
     availability_responses = []
     available_clients = []
     for client in registered:
-        try:
-            response = _post_json(
-                f"{client['url']}/api/availability",
-                {"round": round_id},
-            )
-            response["client_id"] = response.get("client_id", client["client_id"])
-        except (OSError, ValueError):
+        if sequential:
             response = {
-                "client_id": client["client_id"],
-                "available": False,
-                "reason": "availability_request_failed",
+                "client_id": client["client_id"], "available": True,
+                "num_samples": assigned[client["client_id"]],
             }
+        else:
+            try:
+                response = _post_json(
+                    f"{client['url']}/api/availability",
+                    {"round": round_id},
+                )
+                response["client_id"] = response.get("client_id", client["client_id"])
+            except (OSError, ValueError):
+                response = {
+                    "client_id": client["client_id"],
+                    "available": False,
+                    "reason": "availability_request_failed",
+                }
         response["checked_at"] = datetime.now(timezone.utc).isoformat()
         availability_responses.append(response)
         if response.get("available", False):
@@ -691,13 +759,16 @@ def start_round(round_id: int):
     current_app.extensions.setdefault("update_submission_status", {})[round_id] = {}
     current_app.extensions.setdefault("update_submission_attempts", {})[round_id] = []
 
-    seed = config.get("seed", 42)
-    participation = config.get("participation_rate", 0.5)
-    nums_clients = config.get("nums_clients", len(registered))
-    selected_count = max(1, round(nums_clients * participation))
-    rng = random.Random(seed + round_id)
-    selected = sorted(rng.sample(range(len(available_clients)), min(selected_count, len(available_clients))))
-    selected_clients = [available_clients[index] for index in selected]
+    if schedule is not None:
+        selected_clients = [client for client in available_clients if client["client_id"] in schedule["selected_clients"]]
+    else:
+        seed = config.get("seed", 42)
+        participation = config.get("participation_rate", 0.5)
+        nums_clients = config.get("nums_clients", len(registered))
+        selected_count = max(1, round(nums_clients * participation))
+        rng = random.Random(seed + round_id)
+        selected = sorted(rng.sample(range(len(available_clients)), min(selected_count, len(available_clients))))
+        selected_clients = [available_clients[index] for index in selected]
     selected_ids = [client["client_id"] for client in selected_clients]
     current_app.extensions["selected_clients"][round_id] = selected_ids
     selected_at = datetime.now(timezone.utc).isoformat()
@@ -743,6 +814,8 @@ def start_round(round_id: int):
     ]
     current_app.extensions["round_payloads"][round_id] = {
         **config,
+        **({"sequential_schedule": schedule, "real_started_at": progress["started_at"],
+            "_started_clock": started_clock} if schedule is not None else {}),
         "selected_clients": selected_ids,
         "delay_clients": delay_clients,
         "server_url": config.get(
@@ -752,7 +825,7 @@ def start_round(round_id: int):
         "experiment_manager_url": config.get("experiment_manager_url"),
     }
     current_app.extensions["round_submission_clients"][round_id] = (
-        set(selected_ids) - set(delay_clients)
+        set(selected_ids) if sequential else set(selected_ids) - set(delay_clients)
     )
     current_app.extensions["round_delivery_complete"][round_id] = False
     current_app.extensions["round_deadline_reached"][round_id] = False
@@ -769,19 +842,23 @@ def start_round(round_id: int):
                 ):
                     return
                 app.extensions["round_deadline_reached"][round_id] = True
+                if sequential:
+                    app.extensions["round_delivery_complete"][round_id] = True
                 expected = app.extensions["round_submission_clients"].get(
                     round_id, set()
                 )
                 received = app.extensions["round_updates"].get(round_id, {})
                 statuses = app.extensions["update_submission_status"][round_id]
                 missing = sorted(set(expected) - set(received))
+                if sequential:
+                    missing = [client_id for client_id in missing if statuses[client_id]["status"] == "waiting"]
                 for client_id in missing:
                     statuses.setdefault(client_id, {}).update(
                         status="expired",
                         expired_at=datetime.now(timezone.utc).isoformat(),
                     )
 
-            for client_id in missing:
+            for client_id in (() if sequential else missing):
                 client = app.extensions["clients"].get(client_id)
                 if client:
                     try:
@@ -801,12 +878,20 @@ def start_round(round_id: int):
     current_app.extensions["round_timers"][round_id] = timer
     timer.start()
 
-    threading.Thread(
-        target=_deliver_round_models,
-        args=(app, round_id),
-        name=f"deliver-round-{round_id}",
-        daemon=True,
-    ).start()
+    start_model = {}
+    if sequential:
+        start_model = {
+            "start_model_version": global_model["model_version"],
+            "start_model_hash": weights_hash(global_model["weights"]),
+            "sequential_schedule": schedule,
+        }
+    else:
+        threading.Thread(
+            target=_deliver_round_models,
+            args=(app, round_id),
+            name=f"deliver-round-{round_id}",
+            daemon=True,
+        ).start()
     return jsonify(
         status="started",
         round=round_id,
@@ -815,6 +900,7 @@ def start_round(round_id: int):
             current_app.extensions["round_submission_clients"][round_id]
         ),
         deadline=deadline.isoformat(),
+        **start_model,
     ), 202
 
 
@@ -823,6 +909,7 @@ def execute_result(round_id: int, payload: dict):
     if round_id in current_app.extensions.get("completed_rounds", set()):
         return jsonify(error="Round is already completed"), 409
     initial = current_app.extensions.get("global_model")
+    schedule = payload.get("sequential_schedule")
     updates = [item for item in payload.get("updates", []) if item.get("valid") is True]
     defense_enabled = bool(payload.get("defense_enabled", payload.get("defense", "none") != "none"))
     defense_type = payload.get("defense", "none")
@@ -860,6 +947,7 @@ def execute_result(round_id: int, payload: dict):
         status_by_client = current_app.extensions.get("update_submission_status", {}).get(round_id, {})
         accepted_ids = sorted(item["client_id"] for item in updates)
         available_ids = current_app.extensions.get("available_clients", {}).get(round_id, [])
+        evaluation_config = {**payload, "client_evaluation_ids": available_ids} if schedule is not None else payload
         availability = {
             item.get("client_id"): item
             for item in current_app.extensions.get("availability_responses", {}).get(round_id, [])
@@ -871,7 +959,7 @@ def execute_result(round_id: int, payload: dict):
             set(available_ids) | set(selected_ids) | set(status_by_client) | set(availability)
         ):
             submission = status_by_client.get(client_id, {})
-            update = received_by_client.get(client_id, {})
+            update = received_by_client.get(client_id, submission.get("client_update", {}))
             is_accepted = client_id in accepted_ids
             if is_accepted:
                 status, reason = "accepted", None
@@ -884,7 +972,7 @@ def execute_result(round_id: int, payload: dict):
                 status, reason = "excluded", submission.get("reason", "excluded")
                 accepted_at = None
             elif submission.get("status") == "expired":
-                status, reason = "excluded", "submission_timeout"
+                status, reason = "excluded", "real_submission_deadline_exceeded" if schedule else "submission_timeout"
                 accepted_at = None
             elif client_id not in available_ids:
                 status, reason = "excluded", availability.get(client_id, {}).get("reason", "unavailable")
@@ -933,6 +1021,21 @@ def execute_result(round_id: int, payload: dict):
                 "update_norm_before_defense": update.get("update", {}).get("norm_before_defense", update.get("update", {}).get("update_norm")),
                 "update_norm_after_defense": update.get("update", {}).get("norm_after_defense"),
             })
+            if schedule is not None:
+                arrival = schedule["virtual_arrival_seconds"].get(str(client_id))
+                client_activity[-1].update(
+                    experiment_id=experiment_id, seed=payload.get("seed", 42), round=round_id,
+                    num_samples=update.get("num_samples"), assigned_samples=availability.get(client_id, {}).get("num_samples"),
+                    excluded_at=(submission.get("excluded_at") or submission.get("expired_at") or submission.get("rejected_at"))
+                    if not is_accepted and client_id in selected_ids else None,
+                    virtual_arrival_seconds=arrival, virtual_elapsed_seconds=arrival,
+                    virtual_deadline_seconds=schedule["virtual_deadline_seconds"],
+                    base_model_hash=update.get("base_model_hash"),
+                    base_model_version=update.get("base_model_version"),
+                    local_model_hash=update.get("local_model_hash"), local_model_version=update.get("local_model_version"),
+                    update_norm=update.get("update", {}).get("update_norm"),
+                    dataset_fingerprint=update.get("dataset_fingerprint"),
+                )
 
         malicious_ids = payload.get("malicious_clients", [])
         malicious_selected = sorted(set(selected_ids) & set(malicious_ids))
@@ -970,10 +1073,24 @@ def execute_result(round_id: int, payload: dict):
             "round_config": {
                 key: value
                 for key, value in payload.items()
-                if key not in {"updates", "initial_global_model"}
+                if key not in {"updates", "initial_global_model", "_started_clock"}
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if schedule is not None:
+            trained = [row["client_id"] for row in client_activity if row["training_completed_at"]]
+            excluded = sorted(set(selected_ids) - set(accepted_ids))
+            common_result.update(
+                seed=payload.get("seed", 42), start_model_version=initial["model_version"],
+                trained_clients=trained, trained_count=len(trained), selected_count=len(selected_ids),
+                unselected_clients=schedule["unselected_clients"], unselected_count=len(schedule["unselected_clients"]),
+                accepted_count=len(accepted_ids), accepted_samples=sum(item["num_samples"] for item in updates),
+                excluded_clients=excluded, excluded_count=len(excluded),
+                virtual_deadline_seconds=schedule["virtual_deadline_seconds"],
+                virtual_elapsed_seconds=schedule["virtual_elapsed_seconds"],
+                virtual_last_arrival_seconds=schedule["virtual_last_arrival_seconds"],
+                real_started_at=payload["real_started_at"],
+            )
         if len(accepted_ids) < 3:
             progress.update(phase="evaluating", message="채택 업데이트가 3개 미만이어서 모델을 갱신하지 않습니다.")
             evaluation_error = None
@@ -981,7 +1098,7 @@ def execute_result(round_id: int, payload: dict):
                 evaluation = evaluate_global_model(
                     initial,
                     current_app.extensions.get("dataset_range", {}),
-                    payload,
+                    evaluation_config,
                     round_id,
                 )
             except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
@@ -1005,9 +1122,9 @@ def execute_result(round_id: int, payload: dict):
                     key: value for key, value in initial.items() if key != "weights"
                 } | {"checkpoint": str(start_checkpoint)},
                 "model_updated": False,
-                "aggregated_delta": 0.0,
-                "defense_aggregate_norm": 0.0,
-                "fedavg_samples": sum(item["num_samples"] for item in updates),
+                "aggregated_delta": None if schedule is not None else 0.0,
+                "defense_aggregate_norm": None if schedule is not None else 0.0,
+                "fedavg_samples": None if schedule is not None else sum(item["num_samples"] for item in updates),
                 "client_updates": [
                     {
                         **{
@@ -1028,6 +1145,10 @@ def execute_result(round_id: int, payload: dict):
                 "attack_scale": payload.get("attack_scale", -5.0),
                 "reason": "insufficient_accepted_updates",
             }
+            if schedule is not None:
+                result.update(end_model_version=initial["model_version"], end_model_hash=common_result["start_model_hash"],
+                              real_completed_at=datetime.now(timezone.utc).isoformat(),
+                              real_elapsed_seconds=time.monotonic() - payload["_started_clock"])
             if evaluation is not None:
                 current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
             _finish_round(current_app._get_current_object(), round_id)
@@ -1086,7 +1207,7 @@ def execute_result(round_id: int, payload: dict):
         )
         updated = aggregated["global_model"]
         progress.update(phase="evaluating", message="전역 모델을 평가하고 있습니다.")
-        evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), payload, round_id)
+        evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), evaluation_config, round_id)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         progress.update(phase="failed", message=str(error))
         return jsonify(error=str(error), status="failed", round=round_id), 400
@@ -1125,6 +1246,10 @@ def execute_result(round_id: int, payload: dict):
         "model_updated": True,
         "reason": "model_updated",
     }
+    if schedule is not None:
+        result.update(end_model_version=updated["model_version"], end_model_hash=evaluation["model_hash"],
+                      real_completed_at=datetime.now(timezone.utc).isoformat(),
+                      real_elapsed_seconds=time.monotonic() - payload["_started_clock"])
     current_app.extensions["global_model"] = updated
     current_app.extensions.setdefault("global_model_history", []).append({
         "round": round_id, "model": model_summary,

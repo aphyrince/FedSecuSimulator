@@ -16,11 +16,20 @@ def distribute():
     payload = request.get_json(silent=True) or {}
     try:
         manager = current_app.extensions["data_manager"]
-        return jsonify(
-            manager.distribute(
-                payload.get("seed", 42),
-                payload.get("distribution", "iid"),
-            )
-        )
+        experiment = current_app.extensions["experiment_manager"]
+        with experiment.lock:
+            config = experiment.get_config()
+            busy = experiment.single_round_active or experiment.state["status"] in {"running", "stopping"}
+            if getattr(experiment.process_manager, "sequential_runner", None) and busy:
+                raise ValueError("순차 실행 중에는 데이터 배정을 변경할 수 없습니다.")
+            if config.get("data_protocol") and config["experiment_type"] == "federated":
+                if busy:
+                    raise ValueError("실행 중에는 E32 데이터 배정을 변경할 수 없습니다.")
+                return jsonify(manager.distribute(
+                    payload.get("seed", config["seed"]),
+                    payload.get("distribution", config["data_distribution"]),
+                    data_protocol=config["data_protocol"],
+                ))
+        return jsonify(manager.distribute(payload.get("seed", 42), payload.get("distribution", "iid")))
     except (FileNotFoundError, ValueError, OSError, TimeoutError) as exc:
         return jsonify(error=str(exc)), 400

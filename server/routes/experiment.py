@@ -1,8 +1,9 @@
 from flask import Blueprint, current_app, jsonify, request
 from server.config.model_state import create_random_global_model
-from common.model import build_model, model_config, save_model_checkpoint
+from common.model import build_model, decode_wire_weights, encode_weights, model_config, save_model_checkpoint
 from pathlib import Path
 from common.training import TrainingSettings
+from server.services.model_evaluation import evaluate_global_model
 import re
 
 
@@ -34,6 +35,14 @@ def set_round_config():
         if initial_global_model is not None:
             if not isinstance(initial_global_model, dict):
                 raise ValueError("initial_global_model must be an object")
+            if "tensor_encoding" in initial_global_model:
+                if payload.get("client_execution") != "sequential" or initial_global_model["tensor_encoding"] != "base64_float32":
+                    raise ValueError("Unsupported initial model tensor encoding")
+                initial_global_model = {
+                    **initial_global_model,
+                    "weights": encode_weights(decode_wire_weights(initial_global_model["weights"])),
+                }
+                initial_global_model.pop("tensor_encoding")
             build_model(initial_global_model)
             initial_global_model = {
                 **initial_global_model,
@@ -46,7 +55,7 @@ def set_round_config():
         experiment_id = payload.get("experiment_id", "experiment")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", experiment_id):
             raise ValueError("experiment_id must use letters, numbers, underscores or hyphens")
-    except (RuntimeError, TypeError, ValueError) as error:
+    except (KeyError, RuntimeError, TypeError, ValueError) as error:
         return jsonify(error=str(error)), 400
     payload.pop("initial_global_model", None)
     current_app.extensions["round_config"] = payload
@@ -74,6 +83,7 @@ def set_round_config():
         current_app.extensions["completed_rounds"] = set()
         current_app.extensions["global_model_history"] = []
         current_app.extensions["round_results"] = []
+        current_app.extensions["final_test_evaluation"] = None
         root = Path(current_app.config.get("RESULTS_DIR", Path(__file__).resolve().parents[2] / "results"))
         save_model_checkpoint(current_app.extensions["global_model"], root / experiment_id / "checkpoints" / "global_0000.pt")
     return jsonify(status="configured", round=payload.get("round"), config=payload)
@@ -116,3 +126,43 @@ def get_evaluation_history():
             for round_id in sorted(evaluations)
         ],
     )
+
+
+@experiment_bp.post("/api/evaluation/final-test")
+def evaluate_final_test():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(error="Final test request must be an object"), 400
+    round_id = payload.get("round")
+    state = current_app.extensions
+    with state["final_test_lock"]:
+        config = state.get("round_config", {})
+        model = state.get("global_model") or {}
+        rounds = state.get("round_results", [])
+        if (
+            type(round_id) is not int or round_id < 1
+            or round_id != config.get("final_test_round")
+            or not rounds or rounds[-1]["round"] != round_id
+            or round_id not in state.get("completed_rounds", set())
+            or not payload.get("experiment_id")
+            or payload["experiment_id"] != model.get("experiment_id")
+        ):
+            return jsonify(error="Final testing requires a completed final round"), 409
+        cached = state.get("final_test_evaluation")
+        if cached is not None:
+            return jsonify(cached)
+        dataset = state.get("final_test_range")
+        if not dataset:
+            return jsonify(error="Distribute the official final test dataset first"), 409
+        try:
+            metrics = evaluate_global_model(model, dataset, {**config, "max_test_samples": None}, round_id)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
+        result = {
+            **metrics,
+            "experiment_id": model["experiment_id"],
+            "model_version": model["model_version"],
+            "checkpoint": rounds[-1]["global_model"]["checkpoint"],
+        }
+        state["final_test_evaluation"] = result
+        return jsonify(result)

@@ -55,7 +55,9 @@
           (_, index) => {
             const round = index + 1;
             const saved = savedConfigs[index] || {};
-            const delayClients = saved.delay_clients || [];
+            const delayClients = saved.delay_clients ?? (
+              sequentialClientsEnabled && !isDlgExperiment ? defaultRoundDelayClients : []
+            );
             return `
               <tr data-round="${round}">
                 <td>${round}</td>

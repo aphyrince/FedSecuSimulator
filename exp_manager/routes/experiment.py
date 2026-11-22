@@ -1,7 +1,12 @@
+import json
+
 from flask import Blueprint, current_app, jsonify, request
+
+from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 experiment_bp = Blueprint("experiment", __name__)
+SELECTED_FEDAVG_CONFIG = PROJECT_ROOT_PATH / "configs" / "e32_selected_fedavg.json"
 
 
 @experiment_bp.get("/api/experiment/config")
@@ -15,6 +20,22 @@ def set_config():
     try:
         manager = current_app.extensions["experiment_manager"]
         manager.update_config(request.get_json(silent=True) or {})
+        return jsonify(manager.get_public_config())
+    except (ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@experiment_bp.post("/api/experiment/config/selected-fedavg")
+def apply_selected_fedavg_config():
+    """독립 정상 실험 E32에서 확인한 최종 모델과 학습 설정을 적용한다."""
+    try:
+        preset = json.loads(SELECTED_FEDAVG_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current_app.logger.exception("Could not load the E32 FedAvg preset")
+        return jsonify(error="E32 정상 FedAvg 설정을 불러오지 못했습니다."), 500
+    manager = current_app.extensions["experiment_manager"]
+    try:
+        manager.update_config(preset)
         return jsonify(manager.get_public_config())
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 400

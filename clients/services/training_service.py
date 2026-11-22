@@ -15,6 +15,8 @@ def run_local_training(
     state,
     client_id: int,
     global_model: dict[str, Any],
+    *,
+    tensor_payload: bool = False,
 ) -> dict[str, Any]:
     """전역 모델 수신부터 로컬 학습, 업데이트 추출까지 수행한다."""
     round_id = int(global_model.get("round", 1))
@@ -47,6 +49,7 @@ def run_local_training(
         round_id=round_id,
         client_id=client_id,
         progress_callback=state.update_training_progress,
+        **({"tensor_payload": True} if tensor_payload else {}),
     )
     extracted_update = {"values": training_result["model_delta"],
                         "update_norm": weights_norm(training_result["model_delta"])}

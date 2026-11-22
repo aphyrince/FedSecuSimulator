@@ -100,10 +100,15 @@
               </div>
             </details>
           </div>
-          <button class="secondary" onclick="distributeData()">훈련/테스트 데이터 범위 분배</button>
+          <button class="secondary" onclick="distributeData()">데이터 범위 분배</button>
         </div>
 
         <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
+        <div id="selected-fedavg-setting">
+          <button id="selected-fedavg-button" class="secondary" type="button"
+            onclick="applySelectedFedAvgConfig()">최종 ResNet-18 정상 FedAvg 설정 적용</button>
+          <p id="federated-model-settings"></p>
+        </div>
         <div class="form-grid">
           <label>실험 ID<input id="experiment-id" /></label>
           <label id="rounds-setting">라운드 수<input id="rounds" type="number" min="1" /></label>
@@ -121,7 +126,7 @@
               <option value="auto">자동</option>
             </select></label
           >
-          <label>라운드 제출 제한 시간(초)<input id="round-timeout" type="number" min="1" /></label>
+          <label>실제 라운드 제출 제한 시간(초)<input id="round-timeout" type="number" min="1" /></label>
           <label
             >클라이언트별 학습 표본 제한<input
               id="max-train-samples"
@@ -143,6 +148,14 @@
               <option value="non_iid">Non-IID</option>
             </select>
           </label>
+        </div>
+        <div id="virtual-timing-settings" hidden>
+          <div class="form-grid">
+            <label>정상 가상 도착(초)<input id="virtual-normal-arrival" type="number" min="0" step="any" /></label>
+            <label>지연 대상 가상 도착(초)<input id="virtual-delayed-arrival" type="number" min="0" step="any" /></label>
+            <label>가상 마감(초)<input id="virtual-deadline" type="number" min="0" step="any" /></label>
+          </div>
+          <small>가상 마감과 같은 시각에 도착한 업데이트도 채택합니다.</small>
         </div>
         <div id="experiment-templates" class="experiment-templates">
           <div>

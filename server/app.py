@@ -32,6 +32,9 @@ def create_app(host: str, port: int):
         "delayed_clients": [],
     }
     app.extensions["dataset_range"] = {}
+    app.extensions["final_test_range"] = None
+    app.extensions["final_test_lock"] = threading.Lock()
+    app.extensions["final_test_evaluation"] = None
     app.extensions["clients"] = {}
     app.extensions["round_config"] = {}
     app.extensions["available_clients"] = {}

@@ -41,13 +41,15 @@ def _register_sigterm_handler(process_manager, http_server):
 
 
 def create_app(
-    host: str, port: int, client_count: int, server_port: int, client_base_port: int
+    host: str, port: int, client_count: int, server_port: int, client_base_port: int,
+    *, sequential_clients: bool = False,
 ):
     app = Flask(__name__)
     app.extensions["server"] = None
 
     process_manager = ProcessManager(
-        host, client_count, server_port, client_base_port, port
+        host, client_count, server_port, client_base_port, port,
+        sequential_clients=sequential_clients,
     )
     data_manager = DataDistributionManager(process_manager, client_count)
     experiment_manager = ExperimentManager(
@@ -73,6 +75,7 @@ def parse_args():
     parser.add_argument("--client-count", type=int, default=10)
     parser.add_argument("--server-port", type=int, default=5000)
     parser.add_argument("--client-base-port", type=int, default=5101)
+    parser.add_argument("--sequential-clients", action="store_true", help="Run normal FedAvg clients in the manager process")
     return parser.parse_args()
 
 
@@ -84,6 +87,7 @@ if __name__ == "__main__":
         args.client_count,
         args.server_port,
         args.client_base_port,
+        sequential_clients=args.sequential_clients,
     )
     flask_app.extensions["process_manager"].start()
     http_server = make_server(args.host, args.port, flask_app, threaded=True)

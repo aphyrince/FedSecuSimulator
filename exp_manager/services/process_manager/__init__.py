@@ -8,6 +8,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 from exp_manager.services.rest_client import RestClient
+from exp_manager.services.sequential_clients import SequentialClientRunner
 
 
 class ProcessManager:
@@ -18,6 +19,8 @@ class ProcessManager:
         server_port: int,
         client_base_port: int,
         manager_port: int = 8000,
+        *,
+        sequential_clients: bool = False,
     ):
         self.host = host
         self.client_count = client_count
@@ -29,6 +32,10 @@ class ProcessManager:
         self.lock = threading.RLock()
         self.python = sys.executable
         self.rest_client = RestClient()
+        self.sequential_runner = (
+            SequentialClientRunner(client_count, PROJECT_ROOT_PATH / "results", self.server_url())
+            if sequential_clients else None
+        )
 
     def _command(self, script: Path, *args: str):
         return [self.python, str(script), *args]
@@ -80,7 +87,8 @@ class ProcessManager:
 
             # 클라이언트 프로세스들 생성
             client_script = PROJECT_ROOT_PATH / "clients" / "app.py"
-            for client_id in range(self.client_count):
+            client_ids = () if self.sequential_runner else range(self.client_count)
+            for client_id in client_ids:
                 port = self.client_base_port + client_id
                 process = subprocess.Popen(
                     self._command(
@@ -109,6 +117,11 @@ class ProcessManager:
 
     def client_registry(self):
         """중앙 서버에 전달할 클라이언트 id와 네트워크 주소 목록을 만든다."""
+        if self.sequential_runner:
+            return [
+                {"client_id": client_id, "execution": "sequential", "url": self.manager_url()}
+                for client_id in self.sequential_runner.clients
+            ]
         return [
             {
                 "client_id": client_id,
@@ -133,7 +146,7 @@ class ProcessManager:
         server_url = f"http://{self.host}:{self.server_port}"
         client_urls = [
             f"http://{self.host}:{self.client_base_port + client_id}"
-            for client_id in range(self.client_count)
+            for client_id in range(self.client_count) if self.sequential_runner is None
         ]
         while time.monotonic() < deadline:
             if self._is_reachable(server_url) and all(
@@ -178,11 +191,15 @@ class ProcessManager:
         }
         clients = []
         for client_id in range(self.client_count):
-            port = self.client_base_port + client_id
-            url = f"http://{self.host}:{port}"
-            process = self.client_processes.get(client_id)
-            running = process is not None and process.poll() is None
-            details = self._get_live_status(url) if running else None
+            if self.sequential_runner:
+                url = self.manager_url()
+                running = server_running
+                details = self.sequential_runner.client_status(client_id)
+            else:
+                url = self.client_url(client_id)
+                process = self.client_processes.get(client_id)
+                running = process is not None and process.poll() is None
+                details = self._get_live_status(url) if running else None
             clients.append(
                 {
                     "client_id": client_id,

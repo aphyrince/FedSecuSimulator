@@ -16,6 +16,10 @@ from fedsec.validation import positive_int
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def dataset_fingerprint(records: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
+
+
 @lru_cache(maxsize=2)
 def _read_batch(path: str, size: int, modified: int):
     del size, modified
@@ -113,7 +117,7 @@ class CifarRangeDataset(Dataset):
             raise ValueError("Dataset is empty")
         self.images = np.concatenate(chunks).reshape(-1, 3, 32, 32)
         self.labels = np.concatenate(targets).astype(np.int64)
-        self.fingerprint = hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
+        self.fingerprint = dataset_fingerprint(records)
         self.mean = torch.tensor(PREPROCESSING["mean"]).reshape(3, 1, 1)
         self.std = torch.tensor(PREPROCESSING["std"]).reshape(3, 1, 1)
 

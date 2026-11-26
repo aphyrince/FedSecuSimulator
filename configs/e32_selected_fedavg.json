@@ -24,7 +24,7 @@
   "attack_enabled": false,
   "defense_enabled": false,
   "defense": "none",
-  "malicious_clients": [],
+  "malicious_clients": [0, 1],
   "delay_clients": [],
   "virtual_timing": {
     "normal_arrival_seconds": 1.0,

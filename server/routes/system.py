@@ -1,5 +1,6 @@
 from flask import Blueprint, current_app, jsonify, request
 
+from server.routes.aggregation import one_round_at_a_time
 from server.utils.shutdown import schedule_shutdown
 
 
@@ -67,7 +68,9 @@ def status():
         current_round=round_id,
         round_phase=progress.get("phase", "idle"),
         round_message=progress.get("message", ""),
-        round_active=bool(extensions.get("round_lock") and extensions["round_lock"].locked()),
+        round_active=extensions.get("active_round_id") is not None or bool(
+            extensions.get("round_lock") and extensions["round_lock"].locked()
+        ),
         available_count=len(available),
         selected_count=len(selected),
         updates_received=len(updates),
@@ -87,8 +90,12 @@ def status():
 
 
 @system_bp.post("/api/clients/register")
+@one_round_at_a_time
 def register_clients():
     """실험 관리자가 생성한 클라이언트 id와 주소 정보를 중앙 서버에 저장한다."""
+    active_round = current_app.extensions.get("active_round_id")
+    if active_round is not None:
+        return jsonify(error=f"Round {active_round} is still active"), 409
     payload = request.get_json(silent=True) or {}
     clients = payload.get("clients", [])
     current_app.extensions["clients"] = {

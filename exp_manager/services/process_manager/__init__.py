@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -9,6 +10,7 @@ from urllib.request import Request, urlopen
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 from exp_manager.services.rest_client import RestClient
 from exp_manager.services.sequential_clients import SequentialClientRunner
+from common.runtime_log import runtime_logger
 
 
 class ProcessManager:
@@ -66,6 +68,18 @@ class ProcessManager:
                 process.kill()
                 process.wait(timeout=2)
 
+    def _watch_process(self, process, client_id=None):
+        exit_code = process.wait()
+        with self.lock:
+            managed = self.server_process if client_id is None else self.client_processes.get(client_id)
+            if managed is not process:
+                return
+        signal_name = signal.Signals(-exit_code).name if -exit_code in signal.valid_signals() else None
+        runtime_logger.error(
+            "process exited unexpectedly role=%s client_id=%s child_pid=%s exit_code=%s signal=%s",
+            "server" if client_id is None else "client", client_id, process.pid, exit_code, signal_name,
+        )
+
     # 실제 자식 프로세스 생성
     def start(self) -> dict:
         with self.lock:
@@ -84,6 +98,7 @@ class ProcessManager:
                 cwd=PROJECT_ROOT_PATH,
                 env=os.environ.copy(),
             )
+            threading.Thread(target=self._watch_process, args=(self.server_process,), daemon=True).start()
 
             # 클라이언트 프로세스들 생성
             client_script = PROJECT_ROOT_PATH / "clients" / "app.py"
@@ -106,6 +121,7 @@ class ProcessManager:
                     env=os.environ.copy(),
                 )
                 self.client_processes[client_id] = process
+                threading.Thread(target=self._watch_process, args=(process, client_id), daemon=True).start()
 
         try:
             self._wait_until_ready()

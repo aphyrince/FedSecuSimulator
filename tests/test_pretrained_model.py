@@ -1,8 +1,11 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
-from common.model import create_model
+import pytest
+
+from common.model import create_model, save_model_checkpoint
 from common.training import TrainingSettings
 from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.pretrained_model import parse_pretrained_global_model
@@ -26,6 +29,35 @@ class FinalModelRestClient:
 
 def small_model():
     return create_model(seed=7, config={"channels": [1, 1], "hidden_size": 2})
+
+
+@pytest.mark.parametrize("linked_input", [False, True])
+def test_completion_reuses_saved_checkpoint_except_for_linked_input(tmp_path, linked_input):
+    manager = ExperimentManager(UnusedProcessManager(), tmp_path, client_count=10)
+    experiment_id = "saved-model"
+    model = {**small_model(), "experiment_id": experiment_id, "model_version": 1}
+    checkpoint = tmp_path / experiment_id / "checkpoints" / "global_0001.pt"
+    save_model_checkpoint(model, checkpoint)
+    manager.update_config({"experiment_id": experiment_id, "num_rounds": 1})
+    if linked_input:
+        manager.config.update(integrated_experiment_id="linked", continuous_scenario={"security_scenario": "normal"})
+    manager.rest_client = Mock()
+    manager.rest_client.get_json.return_value = model
+    manager.state["status"] = "running"
+    manager.record_round_result({
+        "experiment_id": experiment_id, "round": 1, "accuracy": 0.5, "loss": 1.0,
+        "global_model": {"checkpoint": str(checkpoint)},
+    }, advance=True)
+
+    assert manager.state["status"] == "completed"
+    saved_path = Path(manager.state["global_model_export_path"])
+    if linked_input:
+        assert saved_path.name == "global_model_for_dlg.json"
+        assert json.loads(saved_path.read_text())["weights"] == model["weights"]
+    else:
+        manager.rest_client.get_json.assert_not_called()
+        assert saved_path == checkpoint
+        assert not list(tmp_path.rglob("global_model_for_dlg.json"))
 
 
 def test_parse_json_and_flat_checkpoint_formats():

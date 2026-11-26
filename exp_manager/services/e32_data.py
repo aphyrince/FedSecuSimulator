@@ -21,7 +21,7 @@ def load_e32_manifest() -> dict:
     return manifest
 
 
-def build_paired_assignments(manifest: dict, seed: int, loader):
+def build_paired_assignments(manifest: dict, seed: int, loader, *, training_samples_per_client: int | None = None):
     """Validate file/index identities, then assign every training image in both cases."""
     source = (PROJECT_ROOT_PATH / manifest["source_dir"]).resolve()
     owners = sorted(item["client_id"] for item in manifest["clients"])
@@ -60,8 +60,15 @@ def build_paired_assignments(manifest: dict, seed: int, loader):
     validation_ranges, validation = read_ranges(manifest["test_ranges"])
     final_test_ranges, final_test = read_ranges(manifest["final_test_ranges"])
     counts = (len(training), len(validation), len(final_test))
-    if manifest["scope"] == "full" and (len(owners), counts) != (10, (45000, 5000, 10000)):
+    scope = manifest["scope"]
+    if scope == "full" and (len(owners), counts) != (10, (45000, 5000, 10000)):
         raise ValueError("E32 requires 10 clients and 45000/5000/10000 train/validation/test images")
+    rng = random.Random(positive_int(seed, "seed", 0))
+    if training_samples_per_client is not None:
+        limit = positive_int(training_samples_per_client, "training_samples_per_client") * len(owners)
+        if limit < len(training):
+            training = rng.sample(sorted(training), limit)
+            scope = "smoke"
     per_client, extra = divmod(len(training), len(owners))
     if extra or per_client == 0:
         raise ValueError("The training pool must divide equally across clients")
@@ -69,7 +76,6 @@ def build_paired_assignments(manifest: dict, seed: int, loader):
     by_class = [[] for _ in range(10)]
     for file, index in sorted(training):
         by_class[labels[file][index]].append((file, index))
-    rng = random.Random(positive_int(seed, "seed", 0))
     for samples in by_class:
         rng.shuffle(samples)
     class_order = list(range(10))
@@ -104,7 +110,7 @@ def build_paired_assignments(manifest: dict, seed: int, loader):
         result[distribution] = (clients, class_counts)
 
     return {
-        "source_dir": manifest["source_dir"], "scope": manifest["scope"],
+        "source_dir": manifest["source_dir"], "scope": scope,
         "training_ranges": training_ranges, "validation_ranges": validation_ranges,
         "final_test_ranges": final_test_ranges, "files": sorted(labels),
         "conditions": result,

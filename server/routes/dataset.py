@@ -16,8 +16,12 @@ def set_range():
         or final_test.get("split") != "test" or payload.get("split") != "validation"
     ):
         return jsonify(error="Expected validation and final test dataset ranges"), 400
-    current_app.extensions["dataset_range"] = payload
-    current_app.extensions["final_test_range"] = final_test
+    state = current_app.extensions
+    with state["final_test_lock"]:
+        state["dataset_range"] = payload
+        if state["final_test_range"] != final_test:
+            state["final_test_range"] = final_test
+            state["final_test_evaluation"] = None
     return jsonify(status="configured", dataset=payload)
 
 

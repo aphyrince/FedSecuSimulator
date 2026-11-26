@@ -18,13 +18,17 @@ from server.services.byzantine_defense import apply_norm_clipping
 from common.model import (
     decode_weights,
     decode_wire_weights,
+    encode_wire_weights,
     positive_int,
     save_model_checkpoint,
     weights_hash,
     weights_norm,
 )
 from common.updates import update_delta, update_deltas
+from common.runtime_log import runtime_logger
 from common.training import TrainingSettings, sequential_round_schedule
+from common.update_transport import UPDATE_CONTENT_TYPE, decode_update
+from fedsec.models.resnet18 import RESNET18_FORMAT
 
 
 aggregation_bp = Blueprint("server_aggregation", __name__)
@@ -58,9 +62,9 @@ def _finish_round(app, round_id: int) -> None:
             client_id: _compact_client_update(update)
             for client_id, update in updates.items()
         }
+        _cancel_round_timer(app, round_id)
         if app.extensions.get("active_round_id") == round_id:
             app.extensions["active_round_id"] = None
-    _cancel_round_timer(app, round_id)
 
 
 def _compact_client_update(update: dict) -> dict:
@@ -144,6 +148,12 @@ def _maybe_schedule_round_aggregation(app, round_id: int) -> None:
 def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
     with app.app_context():
         callback_url = payload.get("experiment_manager_url")
+        started = time.monotonic()
+        experiment_id = payload.get("experiment_id")
+        runtime_logger.info(
+            "server aggregation started experiment=%s round=%s updates=%s",
+            experiment_id, round_id, len(payload.get("updates", [])),
+        )
         try:
             response = execute_result(round_id, payload)
             if response.status_code >= 400:
@@ -151,8 +161,12 @@ def _run_round_aggregation(app, round_id: int, payload: dict) -> None:
                 raise RuntimeError(
                     body.get("error", f"Round aggregation failed ({response.status_code})")
                 )
+            runtime_logger.info(
+                "server aggregation finished experiment=%s round=%s elapsed_s=%.2f",
+                experiment_id, round_id, time.monotonic() - started,
+            )
         except Exception as error:
-            app.logger.exception("Asynchronous round aggregation failed: round=%s", round_id)
+            runtime_logger.exception("server aggregation failed experiment=%s round=%s", experiment_id, round_id)
             app.extensions.setdefault("round_progress", {}).update(
                 round=round_id,
                 phase="failed",
@@ -197,6 +211,12 @@ def _deliver_round_models(app, round_id: int) -> None:
             if attack_enabled and client["client_id"] in malicious_ids
         }
         global_model = app.extensions["global_model"]
+        if global_model.get("architecture") == RESNET18_FORMAT:
+            global_model = {
+                **global_model,
+                "weights": encode_wire_weights(global_model["weights"]),
+                "tensor_encoding": "base64_float32",
+            }
         deadline = datetime.fromisoformat(
             app.extensions["update_deadlines"][round_id]
         )
@@ -291,7 +311,15 @@ def _deliver_round_models(app, round_id: int) -> None:
 @aggregation_bp.post("/api/rounds/<int:round_id>/updates")
 def receive_client_update(round_id: int):
     """클라이언트가 제출한 라운드 업데이트를 검증해 라운드별로 저장한다."""
-    payload = request.get_json(silent=True) or {}
+    experiment_id = (current_app.extensions.get("global_model") or {}).get("experiment_id")
+    client_hint = request.headers.get("X-FedSec-Client-Id", "")
+    client_hint = client_hint if len(client_hint) <= 8 and client_hint.isascii() and client_hint.isdigit() else None
+    runtime_logger.info(
+        "server reading update experiment=%s round=%s client_hint=%s bytes=%s",
+        experiment_id, round_id, client_hint, request.content_length,
+    )
+    read_started = time.monotonic()
+    payload = {}
     statuses = current_app.extensions.setdefault("update_submission_status", {})
     round_status = statuses.setdefault(round_id, {})
     attempts = current_app.extensions.setdefault("update_submission_attempts", {})
@@ -300,6 +328,10 @@ def receive_client_update(round_id: int):
 
     def reject(reason: str, status_code: int):
         client_id = payload.get("client_id")
+        runtime_logger.warning(
+            "server rejected update experiment=%s round=%s client=%s http=%s reason=%s",
+            experiment_id, round_id, client_id if type(client_id) is int else client_hint, status_code, reason[:300],
+        )
         now = datetime.now(timezone.utc).isoformat()
         round_attempts.append({
             "client_id": client_id,
@@ -317,6 +349,23 @@ def receive_client_update(round_id: int):
                     "rejected_at": now,
                 }
         return jsonify(error=reason), status_code
+
+    binary = request.mimetype == UPDATE_CONTENT_TYPE
+    if binary:
+        try:
+            payload = decode_update(request.get_data(cache=False))
+        except ValueError as error:
+            return reject(str(error), 400)
+    else:
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return reject("Update payload must be an object", 400)
+        payload = data
+    client_id = payload.get("client_id")
+    runtime_logger.info(
+        "server parsed update experiment=%s round=%s client=%s elapsed_s=%.2f",
+        experiment_id, round_id, client_id if type(client_id) is int else client_hint, time.monotonic() - read_started,
+    )
 
     if round_id in current_app.extensions.get("completed_rounds", set()):
         return reject("Round is already completed", 409)
@@ -347,23 +396,36 @@ def receive_client_update(round_id: int):
         return reject("num_samples must be a non-negative number", 400)
     if "update" not in payload or not isinstance(payload["update"], dict):
         return reject("Invalid update payload", 400)
+    initial_model = current_app.extensions["global_model"]
+    encoded_update = "tensor_encoding" in payload
+    runtime_logger.info(
+        "server validating update experiment=%s round=%s client=%s encoded=%s",
+        experiment_id, round_id, client_id, encoded_update,
+    )
+    validation_started = time.monotonic()
     try:
-        if "tensor_encoding" in payload:
-            if schedule is None or payload["tensor_encoding"] != "base64_float32":
+        if encoded_update and not binary:
+            if payload["tensor_encoding"] != "base64_float32":
                 raise ValueError("Unsupported update tensor encoding")
             payload["local_model"]["weights"] = decode_wire_weights(payload["local_model"]["weights"])
             payload["update"]["values"] = decode_wire_weights(payload["update"]["values"])
-        delta = update_delta(current_app.extensions["global_model"], payload)
+        delta = update_delta(initial_model, payload)
         expected = current_app.extensions.get("expected_sample_counts", {}).get(round_id, {}).get(int(client_id))
         if expected is not None and num_samples != expected:
             raise ValueError("Submitted sample count does not match assigned data")
     except (ValueError, KeyError, TypeError) as error:
         return reject(str(error), 400)
+    runtime_logger.info(
+        "server validated update experiment=%s round=%s client=%s elapsed_s=%.2f",
+        experiment_id, round_id, client_id, time.monotonic() - validation_started,
+    )
 
     completion_lock = current_app.extensions.setdefault(
         "round_completion_lock", threading.Lock()
     )
     with completion_lock:
+        if current_app.extensions["global_model"] is not initial_model:
+            return reject("The global model changed before the update was received", 409)
         if (
             round_id in current_app.extensions.get("completed_rounds", set())
             or round_id
@@ -384,8 +446,8 @@ def receive_client_update(round_id: int):
         if int(client_id) in round_updates:
             return reject("Duplicate client update", 409)
         virtual_late = schedule is not None and client_id in schedule["virtual_late_clients"]
-        compact = _compact_client_update(payload) if schedule is not None else payload
-        if schedule is not None:
+        compact = _compact_client_update(payload) if encoded_update or schedule is not None else payload
+        if encoded_update or schedule is not None:
             compact["update"]["update_norm"] = weights_norm(delta)
             compact["local_model_version"] = payload["local_model"].get("model_version")
             compact["local_model_hash"] = weights_hash(payload["local_model"]["weights"])
@@ -410,6 +472,10 @@ def receive_client_update(round_id: int):
             "num_samples": num_samples,
             "timestamp": received_at,
         })
+    runtime_logger.info(
+        "server recorded update experiment=%s round=%s client=%s status=%s received=%s",
+        experiment_id, round_id, client_id, disposition["status"], len(round_updates),
+    )
     _maybe_schedule_round_aggregation(
         current_app._get_current_object(), round_id
     )
@@ -612,10 +678,7 @@ def aggregate_round(round_id: int):
 @one_round_at_a_time
 def execute_round(round_id: int):
     """수신한 클라이언트 업데이트를 유효성 검사하고 단일 라운드를 집계한다."""
-    active_round = current_app.extensions.get("active_round_id")
-    if active_round is not None and active_round not in current_app.extensions.get(
-        "completed_rounds", set()
-    ):
+    if current_app.extensions.get("active_round_id") is not None:
         return jsonify(error="An asynchronous round is still active"), 409
     payload = request.get_json(silent=True) or {}
     return execute_result(round_id, payload)
@@ -628,9 +691,7 @@ def start_round(round_id: int):
     if round_id in current_app.extensions.get("completed_rounds", set()):
         return jsonify(error="Configure a new experiment before reusing a completed round"), 409
     active_round = current_app.extensions.get("active_round_id")
-    if active_round is not None and active_round not in current_app.extensions.get(
-        "completed_rounds", set()
-    ):
+    if active_round is not None:
         return jsonify(error=f"Round {active_round} is still active"), 409
     payload = request.get_json(silent=True) or {}
     config = payload or current_app.extensions.get("round_config", {})
@@ -850,6 +911,11 @@ def start_round(round_id: int):
                 received = app.extensions["round_updates"].get(round_id, {})
                 statuses = app.extensions["update_submission_status"][round_id]
                 missing = sorted(set(expected) - set(received))
+                runtime_logger.warning(
+                    "server reached update deadline experiment=%s round=%s received=%s outstanding=%s",
+                    config.get("experiment_id"), round_id, len(received),
+                    {client_id: statuses.get(client_id, {}).get("status") for client_id in missing},
+                )
                 if sequential:
                     missing = [client_id for client_id in missing if statuses[client_id]["status"] == "waiting"]
                 for client_id in missing:
@@ -877,6 +943,11 @@ def start_round(round_id: int):
     timer.daemon = True
     current_app.extensions["round_timers"][round_id] = timer
     timer.start()
+    runtime_logger.info(
+        "server round started experiment=%s round=%s selected=%s expected=%s deadline=%s sequential=%s",
+        config.get("experiment_id"), round_id, selected_ids,
+        sorted(current_app.extensions["round_submission_clients"][round_id]), deadline.isoformat(), sequential,
+    )
 
     start_model = {}
     if sequential:
@@ -1151,7 +1222,6 @@ def execute_result(round_id: int, payload: dict):
                               real_elapsed_seconds=time.monotonic() - payload["_started_clock"])
             if evaluation is not None:
                 current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
-            _finish_round(current_app._get_current_object(), round_id)
             current_app.extensions["round_results"].append(result)
             progress.update(
                 phase="completed",
@@ -1161,12 +1231,16 @@ def execute_result(round_id: int, payload: dict):
                     else f"모델을 갱신하지 않았으며 정확도 평가에 실패했습니다: {evaluation_error}"
                 ),
             )
+            _finish_round(current_app._get_current_object(), round_id)
             callback_url = payload.get("experiment_manager_url")
             if callback_url:
                 try:
                     _post_json(callback_url.rstrip("/") + "/api/results/round", result, timeout=30.0)
-                except (OSError, ValueError, URLError):
-                    current_app.logger.warning("Result callback failed: round=%s", round_id)
+                except (OSError, ValueError, URLError) as error:
+                    runtime_logger.warning(
+                        "server result callback failed experiment=%s round=%s error=%s",
+                        experiment_id, round_id, error,
+                    )
             return jsonify(result)
 
         for item in updates:
@@ -1207,7 +1281,13 @@ def execute_result(round_id: int, payload: dict):
         )
         updated = aggregated["global_model"]
         progress.update(phase="evaluating", message="전역 모델을 평가하고 있습니다.")
+        evaluation_started = time.monotonic()
+        runtime_logger.info("server validation started experiment=%s round=%s", experiment_id, round_id)
         evaluation = evaluate_global_model(updated, current_app.extensions.get("dataset_range", {}), evaluation_config, round_id)
+        runtime_logger.info(
+            "server validation finished experiment=%s round=%s elapsed_s=%.2f",
+            experiment_id, round_id, time.monotonic() - evaluation_started,
+        )
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         progress.update(phase="failed", message=str(error))
         return jsonify(error=str(error), status="failed", round=round_id), 400
@@ -1256,13 +1336,16 @@ def execute_result(round_id: int, payload: dict):
         "total_samples": aggregated["total_samples"], "client_weights": aggregated["client_weights"],
     })
     current_app.extensions.setdefault("evaluation_results", {})[round_id] = evaluation
-    _finish_round(current_app._get_current_object(), round_id)
     current_app.extensions["round_results"].append(result)
     progress.update(phase="completed", message="라운드 집계와 평가가 완료되었습니다.")
+    _finish_round(current_app._get_current_object(), round_id)
     callback_url = payload.get("experiment_manager_url")
     if callback_url:
         try:
             _post_json(callback_url.rstrip("/") + "/api/results/round", result, timeout=30.0)
-        except (OSError, ValueError, URLError):
-            current_app.logger.warning("Result callback failed: round=%s", round_id)
+        except (OSError, ValueError, URLError) as error:
+            runtime_logger.warning(
+                "server result callback failed experiment=%s round=%s error=%s",
+                experiment_id, round_id, error,
+            )
     return jsonify(result)

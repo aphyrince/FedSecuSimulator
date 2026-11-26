@@ -200,7 +200,7 @@ DLG 서버는 체크포인트와 클라이언트 그래디언트로 복원합니
 | `rounds/round_<번호>.json`, `rounds.csv` | 라운드·클라이언트 로그 및 평가 |
 | `results.json`, `accuracy.csv` | 실험 요약 및 정확도 |
 | `checkpoints/`, `updates/`, `clients/` | 라운드 모델, 제출 업데이트 및 클라이언트 상태 |
-| `global_model_for_dlg.json` | DLG 입력용 전역 모델 체크포인트 |
+| `global_model_for_dlg.json` | 통합 실험에서 후속 DLG 입력으로 쓰는 정상 FL 모델. 일반 FedAvg는 마지막 라운드의 `.pt`를 재사용하며, 해당 파일이 없는 이전 형식의 결과에는 JSON을 저장합니다. |
 | `experiment_info.json` | 실험 설정과 시나리오 |
 | `dlg_result.json`, `dlg_inputs.json`, `inputs/model.pt` | DLG 결과와 재실행 입력 |
 

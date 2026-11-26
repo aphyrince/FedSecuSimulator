@@ -16,9 +16,10 @@ from fedsec.data import dataset_fingerprint
 class DataDistributionManager:
     """데이터 설정을 읽고, 테스트·훈련 범위를 각 서버에 분배한다."""
 
-    def __init__(self, process_manager, client_count: int):
+    def __init__(self, process_manager, client_count: int, *, e32_train_samples_per_client: int | None = None):
         self.process_manager = process_manager
         self.client_count = client_count
+        self.e32_train_samples_per_client = e32_train_samples_per_client
         self.loader = CifarDataLoader()
         self.splitter = DataSplitter()
         self.rest = RestClient()
@@ -214,7 +215,10 @@ class DataDistributionManager:
 
     def prepare_e32_splits(self, seed: int) -> dict:
         """Build and verify both E32 splits without making any Flask requests."""
-        paired = build_paired_assignments(load_e32_manifest(), seed, self.loader)
+        paired = build_paired_assignments(
+            load_e32_manifest(), seed, self.loader,
+            training_samples_per_client=self.e32_train_samples_per_client,
+        )
         source = paired["source_dir"]
         root = PROJECT_ROOT_PATH / source
         file_hashes = {file: self._file_hash(root / file) for file in paired["files"]}

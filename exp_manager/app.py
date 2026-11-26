@@ -17,6 +17,7 @@ from exp_manager.services.experiment_runner import ExperimentManager
 from exp_manager.services.process_manager import ProcessManager
 from exp_manager.services.data_distribution import DataDistributionManager
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
+from common.runtime_log import configure_runtime_logging
 
 
 def _register_sigterm_handler(process_manager, http_server):
@@ -42,7 +43,7 @@ def _register_sigterm_handler(process_manager, http_server):
 
 def create_app(
     host: str, port: int, client_count: int, server_port: int, client_base_port: int,
-    *, sequential_clients: bool = False,
+    *, sequential_clients: bool = False, e32_train_samples_per_client: int | None = None,
 ):
     app = Flask(__name__)
     app.extensions["server"] = None
@@ -51,7 +52,9 @@ def create_app(
         host, client_count, server_port, client_base_port, port,
         sequential_clients=sequential_clients,
     )
-    data_manager = DataDistributionManager(process_manager, client_count)
+    data_manager = DataDistributionManager(
+        process_manager, client_count, e32_train_samples_per_client=e32_train_samples_per_client,
+    )
     experiment_manager = ExperimentManager(
         process_manager=process_manager,
         results_dir=PROJECT_ROOT_PATH / "results",
@@ -81,6 +84,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    configure_runtime_logging("manager")
     flask_app = create_app(
         args.host,
         args.port,

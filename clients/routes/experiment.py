@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify, request
 
 from clients.services.training_service import build_round_update, run_local_training
-from clients.services.server_client import post_json
+from clients.services.server_client import post_json, post_tensor_update
 from clients.services.dlg_service import add_gaussian_noise, compute_single_image_gradient
 from clients.services.dlg_data_loader import load_image, load_label
 from clients.services.collusion import collude_updates
-from common.model import MODEL_FORMAT, finite_number
+from common.model import MODEL_FORMAT, decode_wire_weights, encode_weights, encode_wire_weights, finite_number
+from common.runtime_log import runtime_logger
+from fedsec.models.resnet18 import RESNET18_FORMAT
 
 
 experiment_bp = Blueprint("client_experiment", __name__)
@@ -22,9 +24,18 @@ def _submit_round_update(
     state, client_id: int, payload: dict, default_server_url: str
 ) -> dict:
     round_id = int(payload.get("round", 1))
-    update = build_round_update(state, client_id, payload)
+    runtime_logger.info(
+        "client preparing update experiment=%s round=%s client=%s",
+        state.global_model.get("experiment_id"), round_id, client_id,
+    )
+    attacked = payload.get("malicious") and payload.get("attack_enabled")
+    tensor_update = state.global_model.get("architecture") == RESNET18_FORMAT and not attacked
+    if tensor_update:
+        update = build_round_update(state, client_id, payload, tensor_payload=True)
+    else:
+        update = build_round_update(state, client_id, payload)
 
-    if payload.get("malicious") and payload.get("attack_enabled"):
+    if attacked:
         if "malicious_peers" in payload:
             peers = payload["malicious_peers"]
         elif round_id in state.malicious_peers:
@@ -106,12 +117,16 @@ def _submit_round_update(
         raise ValueError("Submission identity mismatch")
 
     server_url = payload.get("server_url", default_server_url)
-    response = post_json(
-        f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates",
-        update,
-        timeout=60.0,
-        compact=True,
-    )
+    url = f"{server_url.rstrip('/')}/api/rounds/{round_id}/updates"
+    if tensor_update:
+        response = post_tensor_update(url, update, timeout=60.0)
+    else:
+        local_model = update.get("local_model", {})
+        if local_model.get("architecture") == RESNET18_FORMAT:
+            update["local_model"] = {**local_model, "weights": encode_wire_weights(local_model["weights"])}
+            update["update"] = {**update["update"], "values": encode_wire_weights(update["update"]["values"])}
+            update["tensor_encoding"] = "base64_float32"
+        response = post_json(url, update, timeout=60.0, compact=True)
     state.save_submission(round_id, response)
     return response
 
@@ -135,6 +150,10 @@ def _report_training_failure(app, payload: dict, client_id: int, error: Exceptio
     round_id = int(payload.get("round", 1))
     state = app.extensions["client_state"]
     status = "expired" if isinstance(error, TimeoutError) else "failed"
+    runtime_logger.exception(
+        "client training or submission failed experiment=%s round=%s client=%s status=%s",
+        payload.get("experiment_id"), round_id, client_id, status,
+    )
     state.fail_training(round_id, str(error), status=status)
     try:
         post_json(
@@ -161,7 +180,6 @@ def _train_and_submit(app, payload: dict):
     round_id = int(payload.get("round", 1))
     try:
         with app.app_context():
-            run_local_training(state, client_id, payload)
             round_context = payload.get("round_context", {})
             submission_payload = {
                 "round": round_id,
@@ -181,6 +199,12 @@ def _train_and_submit(app, payload: dict):
                 submission_payload["malicious_peers"] = round_context[
                     "malicious_peers"
                 ]
+            if payload.get("architecture") == RESNET18_FORMAT and not (
+                submission_payload["malicious"] and submission_payload["attack_enabled"]
+            ):
+                run_local_training(state, client_id, payload, tensor_payload=True)
+            else:
+                run_local_training(state, client_id, payload)
             _submit_round_update(
                 state,
                 client_id,
@@ -239,6 +263,15 @@ def receive_global_model():
         return jsonify(error="Client is already training"), 409
 
     try:
+        runtime_logger.info(
+            "client received global model experiment=%s round=%s client=%s bytes=%s format=%s",
+            payload.get("experiment_id"), round_id, current_app.config["CLIENT_ID"],
+            request.content_length, payload.get("tensor_encoding", "numeric JSON"),
+        )
+        if "tensor_encoding" in payload:
+            if payload.pop("tensor_encoding") != "base64_float32":
+                raise ValueError("Unsupported global model tensor encoding")
+            payload["weights"] = decode_wire_weights(payload["weights"])
         state.latest_local_training = {}
         state.expired_rounds.discard(round_id)
         state.receive_global_model(payload)
@@ -285,7 +318,10 @@ def receive_global_model():
 
 @experiment_bp.get("/api/model/global")
 def get_global_model():
-    return jsonify(current_app.extensions["client_state"].global_model)
+    model = current_app.extensions["client_state"].global_model
+    if model.get("architecture") == RESNET18_FORMAT:
+        model = {**model, "weights": encode_weights(model["weights"])}
+    return jsonify(model)
 
 
 @experiment_bp.post("/api/round/execute")
@@ -685,11 +721,19 @@ def receive_shared_malicious_update():
 @experiment_bp.get("/api/training/status")
 def get_training_status():
     """현재 클라이언트의 최신 로컬 학습 결과를 반환한다."""
+    training = current_app.extensions["client_state"].latest_local_training
+    local_model = training.get("local_model", {})
+    if local_model.get("architecture") == RESNET18_FORMAT:
+        delta = encode_weights(training["model_delta"])
+        training = {
+            **training,
+            "local_model": {**local_model, "weights": encode_weights(local_model["weights"])},
+            "model_delta": delta,
+            "extracted_update": {**training["extracted_update"], "values": delta},
+        }
     return jsonify(
         client_id=current_app.config["CLIENT_ID"],
-        training=current_app.extensions[
-            "client_state"
-        ].latest_local_training,
+        training=training,
     )
 
 

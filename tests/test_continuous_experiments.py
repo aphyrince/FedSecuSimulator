@@ -13,6 +13,7 @@ from exp_manager.services.experiment_runner import (
     CONTINUOUS_SECURITY_SCENARIOS,
     ExperimentManager,
 )
+from exp_manager.services.sequential_clients import SequentialClientRunner
 
 
 class RunningProcess:
@@ -150,11 +151,14 @@ def test_continuous_start_creates_24_unique_experiments_and_metadata():
         thread.assert_called_once()
 
 
-def test_continuous_worker_runs_cases_in_order_and_persists_outcomes():
+@pytest.mark.parametrize(
+    "protocol_options", [{}, {"data_protocol": "e32"}], ids=["smallcnn-default", "e32"]
+)
+def test_continuous_worker_runs_cases_in_order_and_persists_outcomes(protocol_options):
     with tempfile.TemporaryDirectory() as temporary_directory:
         results_dir = Path(temporary_directory)
         manager = ExperimentManager(ProcessManager(), results_dir, client_count=10)
-        manager.config.update(experiment_type="federated", num_rounds=1)
+        manager.config.update(experiment_type="federated", num_rounds=1, **protocol_options)
         batch_id = "batch-test"
         cases = manager._prepare_continuous_cases(
             scenario_cases(), batch_id, manager.get_config()
@@ -180,8 +184,8 @@ def test_continuous_worker_runs_cases_in_order_and_persists_outcomes():
             def status(self):
                 return {"configured": False}
 
-            def distribute(self, seed, distribution):
-                distribution_calls.append((seed, distribution))
+            def distribute(self, **options):
+                distribution_calls.append(options)
 
         manager.data_manager = DataManager()
         manager.state["status"] = "running"
@@ -214,11 +218,59 @@ def test_continuous_worker_runs_cases_in_order_and_persists_outcomes():
         ] * CONTINUOUS_CASE_COUNT
         assert started == [(case["experiment_id"], 1) for case in cases]
         assert distribution_calls == [
-            (case["seed"], case["data_distribution"]) for case in cases
+            {"seed": case["seed"], "distribution": case["data_distribution"], **protocol_options}
+            for case in cases
         ]
         assert manager.state["status"] == "completed"
         assert manager.state["continuous_experiment"]["status"] == "completed"
         assert manager.get_config()["experiment_id"] == base_config["experiment_id"]
+
+
+@pytest.mark.parametrize(
+    "endpoint, reason",
+    [
+        ("/api/experiment/continuous/start", "24개 연속 실험"),
+        ("/api/experiment/continuous/dlg/start", "DLG 연속 실험"),
+        ("/api/experiment/continuous/linked/start", "통합 실험"),
+    ],
+)
+def test_sequential_mode_rejects_batch_requests_before_start(tmp_path, endpoint, reason):
+    app = create_app("127.0.0.1", 0, 10, 5000, 5101, sequential_clients=True)
+    manager = app.extensions["experiment_manager"]
+    manager.results_dir = tmp_path
+    initial_status = manager.status()
+
+    with patch("exp_manager.services.experiment_runner.threading.Thread") as thread:
+        response = app.test_client().post(endpoint, json={"cases": scenario_cases()})
+
+    assert response.status_code == 409
+    assert "순차 클라이언트 모드" in response.json["error"]
+    assert reason in response.json["error"]
+    assert manager.status() == initial_status
+    assert not list(tmp_path.iterdir())
+    thread.assert_not_called()
+
+
+def test_individual_sequential_start_saves_schedule_before_first_round(tmp_path):
+    processes = ProcessManager()
+    processes.sequential_runner = SequentialClientRunner(10, tmp_path, "http://server")
+    manager = ExperimentManager(processes, tmp_path, client_count=10)
+    manager.config.update(experiment_id="normal-sequential", num_rounds=2, seed=17)
+    observed = []
+
+    def observe_first_round(config, round_id):
+        schedule_path = tmp_path / config["experiment_id"] / "round_schedule.json"
+        observed.append((round_id, json.loads(schedule_path.read_text(encoding="utf-8"))))
+
+    with patch.object(manager, "_start_round", side_effect=observe_first_round):
+        assert manager.start()["status"] == "running"
+        manager.worker.join(timeout=5)
+
+    (round_id, schedule), = observed
+    assert round_id == 1
+    assert schedule["seed"] == 17
+    assert schedule["registered_clients"] == list(range(10))
+    assert [item["round"] for item in schedule["rounds"]] == [1, 2]
 
 
 def test_individual_start_redistributes_using_experiment_seed_and_distribution():

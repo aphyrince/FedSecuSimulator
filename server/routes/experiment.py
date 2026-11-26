@@ -3,6 +3,7 @@ from server.config.model_state import create_random_global_model
 from common.model import build_model, decode_wire_weights, encode_weights, model_config, save_model_checkpoint
 from pathlib import Path
 from common.training import TrainingSettings
+from server.routes.aggregation import one_round_at_a_time
 from server.services.model_evaluation import evaluate_global_model
 import re
 
@@ -23,11 +24,12 @@ def get_config():
 
 
 @experiment_bp.post("/api/round/config")
+@one_round_at_a_time
 def set_round_config():
+    active_round = current_app.extensions.get("active_round_id")
+    if active_round is not None:
+        return jsonify(error=f"Round {active_round} is still active"), 409
     payload = request.get_json(silent=True) or {}
-    lock = current_app.extensions.get("round_lock")
-    if lock is not None and lock.locked():
-        return jsonify(error="A round is already running"), 409
     try:
         TrainingSettings.from_dict(payload)
         model_config(payload.get("model_config"))
@@ -58,10 +60,10 @@ def set_round_config():
     except (KeyError, RuntimeError, TypeError, ValueError) as error:
         return jsonify(error=str(error)), 400
     payload.pop("initial_global_model", None)
-    current_app.extensions["round_config"] = payload
     previous = current_app.extensions.get("global_model")
     if previous is not None and previous.get("experiment_id") == experiment_id and payload.get("round") != 1 and model_config(payload.get("model_config")) != previous.get("model_config"):
         return jsonify(error="Model architecture cannot change within an experiment"), 400
+    current_app.extensions["round_config"] = payload
     if previous is None or previous.get("experiment_id") != experiment_id or payload.get("round") == 1:
         if initial_global_model is not None:
             current_app.extensions["global_model"] = initial_global_model

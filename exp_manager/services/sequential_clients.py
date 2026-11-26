@@ -132,7 +132,7 @@ class SequentialClientRunner:
                     "base_model_version", "base_model_hash", "num_samples", "dataset_fingerprint", "training_accuracy",
                 )})
                 entry["training_status"] = "completed"
-                update = build_round_update(state, client_id, {"round": round_id})
+                update = build_round_update(state, client_id, {"round": round_id}, tensor_payload=True)
                 entry.update(local_model_version=update["local_model"]["model_version"],
                              local_model_hash=weights_hash(update["local_model"]["weights"]),
                              update_norm=update["update"]["update_norm"])

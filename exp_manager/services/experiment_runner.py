@@ -10,9 +10,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from common.training import TrainingSettings
+from common.training import TrainingSettings, sequential_round_schedule, virtual_timing
+from common.runtime_log import runtime_logger
 from common.model import (
+    MODEL_FORMAT,
     build_model,
+    encode_wire_weights,
     load_model_checkpoint,
     model_config,
     finite_number,
@@ -26,8 +29,10 @@ from exp_manager.services.experiment_output import (
     save_experiment_outputs,
     save_round_result,
 )
+from exp_manager.services.e32_data import E32_DATA_PROTOCOL
 from exp_manager.services.pretrained_model import parse_pretrained_global_model
 from exp_manager.services.rest_client import RestClient
+from exp_manager.services.sequential_clients import SequentialClientRunner
 from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 from common.model import load_model_checkpoint
 
@@ -148,6 +153,7 @@ class ExperimentManager:
             "defense_enabled": False,
             "clip_norm": 1.0,
             "delay_clients": [],
+            "virtual_timing": virtual_timing(),
             "data_distribution": "iid",
             "round_configs": [],
         }
@@ -172,6 +178,7 @@ class ExperimentManager:
 
     def get_public_config(self) -> dict:
         config = self.get_config()
+        config["sequential_clients"] = self._sequential_runner() is not None
         pretrained_model = config.pop("pretrained_global_model", None)
         dlg_image = config.pop("dlg_image", [])
         config["pretrained_global_model_loaded"] = pretrained_model is not None
@@ -236,7 +243,9 @@ class ExperimentManager:
                 "defense_enabled",
                 "clip_norm",
                 "delay_clients",
+                "virtual_timing",
                 "data_distribution",
+                "data_protocol",
                 "round_configs",
             )
             allowed = (*allowed, *TrainingSettings.__dataclass_fields__, "model_config", "round_timeout")
@@ -277,6 +286,8 @@ class ExperimentManager:
     def _validate_config(self):
         TrainingSettings.from_dict(self.config)
         model_config(self.config.get("model_config"))
+        if self.config.get("data_protocol") not in (None, E32_DATA_PROTOCOL):
+            raise ValueError("지원하지 않는 데이터 프로토콜입니다.")
         if self.config["pretrained_model_format"] not in {"json", "csv", "text"}:
             raise ValueError("지원하지 않는 전역 모델 입력 형식입니다.")
         if (
@@ -285,6 +296,7 @@ class ExperimentManager:
         ):
             raise ValueError("DLG 실험에 사용할 사전 전역 모델이 등록되지 않았습니다.")
         finite_number(self.config["round_timeout"], "round_timeout", positive=True)
+        virtual_timing(self.config.get("virtual_timing"))
         positive_int(self.config["seed"], "seed", 0)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", self.config["experiment_id"]):
             raise ValueError("실험 ID는 영문·숫자·밑줄·하이픈으로 입력하세요.")
@@ -321,6 +333,10 @@ class ExperimentManager:
                 return 1
             return int(self.config.get("dlg_training_rounds", 5)) + 1
         return int(self.config.get("num_rounds", 1))
+
+    @staticmethod
+    def _uses_e32_data(config: dict) -> bool:
+        return config.get("experiment_type") == "federated" and config.get("data_protocol") == E32_DATA_PROTOCOL
 
     def status(self) -> dict:
         with self.lock:
@@ -462,6 +478,12 @@ class ExperimentManager:
             if self.state["status"] == "stopping" or self._continuous_is_active():
                 raise RuntimeError("진행 중인 라운드가 종료될 때까지 기다려 주세요.")
             self._validate_config()
+            runner = self._sequential_runner()
+            schedule = None
+            if runner is not None:
+                if self.config["experiment_type"] != "federated":
+                    raise ValueError("순차 실행은 정상 FedAvg 실험에서 사용할 수 있습니다.")
+                schedule = self._build_sequential_schedule(self.config, runner)
             directory = self.results_dir / self.config["experiment_id"]
             if (
                 (directory / "results.json").exists()
@@ -472,6 +494,7 @@ class ExperimentManager:
             server_process = self.process_manager.server_process
             if not server_process or server_process.poll() is not None:
                 raise RuntimeError("중앙 서버가 실행 중이어야 합니다.")
+            self.process_manager.sync_client_registry()
             data_manager = getattr(self, "data_manager", None)
             if data_manager is not None:
                 if not data_manager.status().get("configured"):
@@ -479,26 +502,27 @@ class ExperimentManager:
                 data_manager.distribute(
                     seed=self.config["seed"],
                     distribution=self.config["data_distribution"],
+                    **({"data_protocol": E32_DATA_PROTOCOL} if self._uses_e32_data(self.config) else {}),
                 )
-            self.process_manager.sync_client_registry()
-            self.stop_event.clear()
-            self.processed_rounds.clear()
-            self.advanced_rounds.clear()
-            self.state.update(
-                status="running",
-                current_round=0,
-                round_results=[],
-                log_path=None,
-                result_path=None,
-                chart_path=None,
-                global_model_export_path=None,
-                continuous_experiment=None,
-                message="실험을 시작했습니다.",
-            )
             self._write_experiment_info(self.config)
-            self.worker = threading.Thread(target=self._run, daemon=True)
-            self.worker.start()
-            return self.status()
+            if schedule is not None:
+                self._schedule_path(self.config).write_text(
+                    json.dumps(schedule, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+            return self._begin_run()
+
+    def _begin_run(self, **run_options) -> dict:
+        self.stop_event.clear()
+        self.processed_rounds.clear()
+        self.advanced_rounds.clear()
+        self.state.update(
+            status="running", current_round=0, round_results=[], log_path=None, result_path=None,
+            chart_path=None, global_model_export_path=None, continuous_experiment=None,
+            message="실험을 시작했습니다.",
+        )
+        self.worker = threading.Thread(target=self._run, kwargs=run_options, daemon=True)
+        self.worker.start()
+        return self.status()
 
     def start_continuous_experiments(self, cases: list[dict]) -> dict:
         """환경·보안 조합 24개를 별도 ID로 순차 실행한다."""
@@ -509,6 +533,8 @@ class ExperimentManager:
                 or self._continuous_is_active()
             ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
+            if self._sequential_runner() is not None:
+                raise ValueError("순차 클라이언트 모드는 개별 정상 FedAvg를 지원하며 24개 연속 실험은 지원하지 않습니다.")
             if self.config.get("experiment_type") != "federated":
                 raise ValueError("연속 실험은 내부자 협력공격 모드에서만 사용할 수 있습니다.")
             self._validate_config()
@@ -583,6 +609,8 @@ class ExperimentManager:
                 or self._continuous_is_active()
             ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
+            if self._sequential_runner() is not None:
+                raise ValueError("순차 클라이언트 모드에서는 DLG 연속 실험을 실행할 수 없습니다.")
             if not isinstance(payload, dict):
                 raise ValueError("연속 DLG 설정은 객체 형식이어야 합니다.")
 
@@ -817,8 +845,14 @@ class ExperimentManager:
                 or self._continuous_is_active()
             ):
                 raise RuntimeError("다른 실험이 실행 중입니다.")
+            if self._sequential_runner() is not None:
+                raise ValueError("순차 클라이언트 모드에서는 연합학습과 DLG를 연결하는 통합 실험을 실행할 수 없습니다.")
             if self.config.get("experiment_type") != "federated":
                 raise ValueError("연결 실험은 연합학습 설정에서 시작해야 합니다.")
+            if self.config["model_config"].get("architecture", MODEL_FORMAT) != MODEL_FORMAT:
+                raise ValueError(
+                    f"통합 실험의 DLG 단계는 {MODEL_FORMAT} 체크포인트를 지원합니다."
+                )
             self._validate_config()
             server_process = self.process_manager.server_process
             if not server_process or server_process.poll() is not None:
@@ -1229,6 +1263,10 @@ class ExperimentManager:
                 for key in (
                     "num_rounds",
                     "seed",
+                    "model_config",
+                    "optimizer",
+                    "momentum",
+                    "weight_decay",
                     "local_epochs",
                     "batch_size",
                     "learning_rate",
@@ -1247,6 +1285,7 @@ class ExperimentManager:
                     "round_configs",
                 )
             }
+            manifest_case["configuration"]["augmentation"] = config.get("augmentation", "none")
         return manifest_case
 
     def _write_continuous_experiment_info(
@@ -1318,6 +1357,9 @@ class ExperimentManager:
             "comparison_protocol": manifest.get("comparison_protocol"),
             "file_sha256": manifest.get("file_sha256", {}),
             "manifest_path": snapshot.get("split_manifest_path"),
+            **{key: snapshot[key] for key in (
+                "data_protocol", "scope", "validation_range", "final_test_range", "evaluation_sets"
+            ) if snapshot.get(key) is not None},
         }
 
     def _write_experiment_info(
@@ -1398,7 +1440,7 @@ class ExperimentManager:
         split = info.get("data_split")
         if not split:
             raise ValueError("재실행에 필요한 데이터 분할 스냅샷이 없습니다.")
-        source_root = Path(split["source_dir"]).resolve()
+        source_root = (PROJECT_ROOT_PATH / split["source_dir"]).resolve()
         for relative_path, expected_hash in split.get("file_sha256", {}).items():
             dataset_path = (source_root / relative_path).resolve()
             if not dataset_path.is_relative_to(source_root) or not dataset_path.is_file():
@@ -1412,9 +1454,14 @@ class ExperimentManager:
             or not model_path.is_file()
         ):
             raise FileNotFoundError("라운드 시작 모델 체크포인트가 없습니다.")
-        model = load_model_checkpoint(model_path)
+        sequential = saved["round_config"].get("client_execution") == "sequential"
+        if sequential and self._sequential_runner() is None:
+            raise ValueError("순차 라운드 재실행에는 --sequential-clients가 필요합니다.")
+        model = load_model_checkpoint(model_path, tensor_payload=True) if sequential else load_model_checkpoint(model_path)
         if model.get("model_hash") != saved.get("start_model_hash"):
             raise ValueError("라운드 체크포인트 해시가 저장된 로그와 다릅니다.")
+        if sequential:
+            return self._replay_sequential_round(experiment_id, round_id, info, saved, model)
 
         rest = self.rest_client
         server_url = self.process_manager.server_url()
@@ -1460,6 +1507,47 @@ class ExperimentManager:
             "experiment_manager_url": self.process_manager.manager_url(),
         }
         return self.execute_single_round(round_id, replay_payload)
+
+    def _replay_sequential_round(self, experiment_id: str, round_id: int, info: dict, saved: dict, model: dict) -> dict:
+        runner = self._sequential_runner()
+        split = info["data_split"]
+        saved_config = saved["round_config"]
+        expected = sequential_round_schedule(saved_config, runner.clients)
+        plan = saved_config.get("sequential_schedule", expected)
+        source_schedule = self._find_experiment_output_directory(experiment_id) / "round_schedule.json"
+        if source_schedule.is_file():
+            schedule = json.loads(source_schedule.read_text(encoding="utf-8"))
+            if schedule["registered_clients"] != sorted(runner.clients) or sum(row == plan for row in schedule["rounds"]) != 1:
+                raise ValueError("저장된 실행 일정이 라운드 설정과 다릅니다.")
+        if (
+            plan != expected or plan["selected_clients"] != saved["selected_clients"]
+            or model["model_version"] != saved.get("start_model_version", model["model_version"])
+        ):
+            raise ValueError("저장된 라운드 일정 또는 시작 모델 버전이 일치하지 않습니다.")
+        assignments = {row["client_id"]: row for row in split["client_ranges"]}
+        if set(assignments) != set(runner.clients) or len(split["client_ranges"]) != len(assignments):
+            raise ValueError("저장된 데이터 배정과 실행기의 클라이언트가 일치하지 않습니다.")
+        replay_id = f"{experiment_id[:60]}-replay-r{round_id}-{uuid.uuid4().hex[:8]}"
+        configuration = {**info["configuration"], **TrainingSettings.from_dict(saved_config).to_dict(),
+                         "experiment_id": replay_id, "seed": saved_config["seed"], "num_rounds": round_id,
+                         "round_configs": [], "round_timeout": saved_config["round_timeout"]}
+        configuration.pop("integrated_experiment_id", None)
+        data = dict(split.get("validation_range") or split["test_range"])
+        if split.get("final_test_range"):
+            data["final_test_range"] = split["final_test_range"]
+        with self.lock:
+            self.update_config(configuration)
+            self.rest_client.post_json(f"{self.process_manager.server_url()}/api/dataset/range", data)
+            runner.configure_datasets(split["source_dir"], [
+                {key: assignments[client_id][key] for key in ("ranges", "indices_by_file") if key in assignments[client_id]}
+                for client_id in sorted(runner.clients)
+            ])
+            self.process_manager.sync_client_registry()
+            self._write_experiment_info(self.config, replay_of={"experiment_id": experiment_id, "round": round_id}, data_split=split)
+            self._schedule_path(self.config).write_text(json.dumps({
+                "seed": saved_config["seed"], "registered_clients": sorted(runner.clients), "rounds": [plan],
+            }, indent=2), encoding="utf-8")
+            return self._begin_run(first_round=round_id, saved_round_config=saved_config, initial_model=model)
 
     def replay_dlg(self, experiment_id: str, info: dict | None = None) -> dict:
         """저장된 DLG 체크포인트·원본 이미지·레이블로 복원 공격을 재실행한다."""
@@ -1659,6 +1747,7 @@ class ExperimentManager:
                 batch_state["cases"] = deepcopy(manifest["cases"])
         except Exception as exc:
             current_index = int(manifest.get("current_case", 0))
+            runtime_logger.exception("manager batch failed batch=%s case=%s", manifest.get("batch_id"), current_index)
             for case in manifest["cases"]:
                 if case["status"] == "running":
                     case["status"] = "failed"
@@ -1673,7 +1762,6 @@ class ExperimentManager:
             manifest["status"] = "failed"
             manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
             manifest["error"] = str(exc)
-            self._write_continuous_manifest(manifest_path, manifest)
             with self.lock:
                 self.config = deepcopy(base_config)
                 self.state.update(status="failed", message=f"연속 실험 실패: {exc}")
@@ -1681,18 +1769,27 @@ class ExperimentManager:
                 if batch_state:
                     batch_state["status"] = "failed"
                     batch_state["cases"] = deepcopy(manifest["cases"])
+                    if 1 <= current_index <= len(manifest["cases"]):
+                        batch_state["current_case"] = current_index
+                        batch_state["current_case_name"] = manifest["cases"][current_index - 1]["name"]
+            try:
+                self._write_continuous_manifest(manifest_path, manifest)
+            except OSError:
+                runtime_logger.exception("manager could not persist failed batch manifest path=%s", manifest_path)
 
     def _run_continuous_case(
         self, config: dict, index: int, manifest: dict, manifest_path: Path
     ) -> bool:
         if self.stop_event.is_set():
             return False
+        manifest["current_case"] = index
         if config["experiment_type"] == "federated":
             data_manager = getattr(self, "data_manager", None)
             if data_manager is not None:
                 data_manager.distribute(
                     seed=config["seed"],
                     distribution=config["data_distribution"],
+                    **({"data_protocol": E32_DATA_PROTOCOL} if self._uses_e32_data(config) else {}),
                 )
         self._write_continuous_experiment_info(
             index, config, manifest["total_cases"]
@@ -1725,7 +1822,6 @@ class ExperimentManager:
                 current_case_name=name,
             )
             batch_state["cases"][index - 1]["status"] = "running"
-        manifest["current_case"] = index
         manifest["cases"][index - 1]["status"] = "running"
         self._write_continuous_manifest(manifest_path, manifest)
         self._start_round(config, 1)
@@ -1918,7 +2014,7 @@ class ExperimentManager:
             self.dlg_checkpoints_by_round.clear()
         return self.status()
 
-    def _run(self):
+    def _run(self, first_round: int = 1, *, saved_round_config: dict | None = None, initial_model: dict | None = None):
         config = self.get_config()
         round_results = []
         try:
@@ -1927,39 +2023,84 @@ class ExperimentManager:
                     self.state["status"] = "stopped"
                     self.state["message"] = "실험이 중단되었습니다."
                 return
-            self._start_round(config, 1)
+            if saved_round_config is None:
+                self._start_round(config, first_round)
+            else:
+                self._start_round(config, first_round, saved_round_config=saved_round_config, initial_model=initial_model)
             if self.stop_event.is_set():
                 with self.lock:
                     self.state.update(status="stopped", message="실험이 중단되었습니다.")
         except Exception as exc:
+            runtime_logger.exception("manager experiment failed experiment=%s round=%s", config["experiment_id"], first_round)
             with self.lock:
                 self.state["status"] = "failed"
                 self.state["message"] = f"실험 실패: {exc}"
 
-    def _start_round(self, config: dict, round_id: int):
+    def _sequential_runner(self) -> SequentialClientRunner | None:
+        runner = getattr(self.process_manager, "sequential_runner", None)
+        return runner if isinstance(runner, SequentialClientRunner) else None
+
+    def _schedule_path(self, config: dict) -> Path:
+        return experiment_output_directory(self.results_dir, config) / "round_schedule.json"
+
+    def _build_sequential_schedule(self, config: dict, runner: SequentialClientRunner) -> dict:
+        rounds = [
+            sequential_round_schedule(
+                {**self._round_config(round_id, config), "round": round_id, "seed": config["seed"],
+                 "virtual_timing": config.get("virtual_timing")},
+                runner.clients,
+            )
+            for round_id in range(1, self.total_round_count() + 1)
+        ]
+        if len({tuple(plan["delay_clients"]) for plan in rounds}) != 1:
+            raise ValueError("가상 지연 대상은 모든 라운드에서 동일해야 합니다.")
+        return {"seed": config["seed"], "registered_clients": sorted(runner.clients), "rounds": rounds}
+
+    def _start_round(self, config: dict, round_id: int, *, saved_round_config: dict | None = None,
+                     initial_model: dict | None = None):
         """라운드 설정을 중앙 서버에 전달하고 개별 라운드 시작 API를 호출한다."""
         if self.stop_event.is_set():
             return
         round_config = {
-            **self._round_config(round_id, config),
+            **(saved_round_config if saved_round_config is not None else self._round_config(round_id, config)),
             "experiment_id": config["experiment_id"],
             "round": round_id,
             "seed": config["seed"],
             "nums_clients": self.client_count,
             "experiment_manager_url": self.process_manager.manager_url(),
         }
+        if self._uses_e32_data(config) and saved_round_config is None:
+            round_config["final_test_round"] = config["num_rounds"]
+        if saved_round_config is not None:
+            round_config["server_url"] = self.process_manager.server_url()
         malicious_clients = self.prepare_malicious_clients(
             round_id, round_config, config
         )
         round_config["malicious_clients"] = malicious_clients
+        runner = self._sequential_runner()
+        if runner is not None:
+            schedule = json.loads(self._schedule_path(config).read_text(encoding="utf-8"))
+            plan = next(row for row in schedule["rounds"] if row["round"] == round_id)
+            round_config.update(
+                client_execution="sequential", assigned_samples=runner.sample_counts(),
+                sequential_schedule=plan, virtual_timing=plan["virtual_timing"],
+                client_evaluation_max_samples=round_config.get("client_evaluation_max_samples", config["max_test_samples"]),
+            )
         if round_config.get("round_type") == "dlg":
             self.execute_dlg_round(round_id, round_config)
             return
+        server_config = round_config
+        if initial_model is not None:
+            server_config = {**round_config, "initial_global_model": {
+                **initial_model, "weights": encode_wire_weights(initial_model["weights"]),
+                "tensor_encoding": "base64_float32",
+            }}
         self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/round/config",
-            round_config,
-            timeout=30.0,
+            server_config,
+            timeout=120.0 if initial_model is not None else 30.0,
         )
+        runtime_logger.info("manager requesting round start experiment=%s round=%s", config["experiment_id"], round_id)
         result = self.rest_client.post_json(
             f"{self.process_manager.server_url()}/api/rounds/{round_id}/start",
             round_config,
@@ -1967,6 +2108,9 @@ class ExperimentManager:
         )
         if result.get("status") != "started" or result.get("round") != round_id:
             raise RuntimeError(f"중앙 서버가 라운드 시작을 확인하지 않았습니다: {result}")
+        runtime_logger.info("manager received round start confirmation experiment=%s round=%s", config["experiment_id"], round_id)
+        if runner is not None:
+            runner.run_round(round_config, result, self.stop_event)
 
     def execute_dlg_round(self, round_id: int, round_config: dict) -> dict:
         """참가 클라이언트에서 실제 CIFAR-10 단일 샘플을 선택한다.
@@ -2195,6 +2339,12 @@ class ExperimentManager:
         config = self.get_config()
         if result.get("experiment_id") != config["experiment_id"]:
             raise ValueError("다른 실험의 결과입니다.")
+        runner = self._sequential_runner()
+        if runner is not None and result.get("round_config", {}).get("client_execution") == "sequential":
+            execution_log = runner.record_server_result(result)
+            if execution_log is not None:
+                path, summary = execution_log
+                result = {**result, **summary, "client_execution_log": str(path)}
         round_config = self._round_config(round_id, config)
         malicious_clients = self.malicious_clients_by_round.get(
             round_id, result.get("malicious_clients", [])
@@ -2224,6 +2374,10 @@ class ExperimentManager:
             ),
         }
         round_path = save_round_result(self.results_dir, config, result)
+        runtime_logger.info(
+            "manager saved round result experiment=%s round=%s accepted=%s path=%s",
+            config["experiment_id"], round_id, len(result.get("accepted_clients", [])), round_path,
+        )
 
         with self.lock:
             should_advance = advance and round_id not in self.advanced_rounds
@@ -2262,12 +2416,42 @@ class ExperimentManager:
             and round_id >= self.total_round_count()
             and self.state["status"] == "running"
         ):
-            export_path = None
-            if config.get("experiment_type") == "federated":
-                export_path = self._save_final_global_model_for_dlg(config)
-            log_path, result_path, chart_path = save_experiment_outputs(
-                self.results_dir, config, self.state["round_results"]
-            )
+            final_test = None
+            if self._uses_e32_data(config) and result.get("round_config", {}).get("final_test_round", round_id) == round_id:
+                try:
+                    final_test = self.rest_client.post_json(
+                        f"{self.process_manager.server_url()}/api/evaluation/final-test",
+                        {"experiment_id": config["experiment_id"], "round": round_id},
+                        timeout=float(config["round_timeout"]),
+                    )
+                except (OSError, ValueError) as exc:
+                    with self.lock:
+                        self.state.update(status="failed", message=f"공식 테스트 평가 실패: {exc}")
+                    return round_path
+            try:
+                export_path = None
+                if config.get("experiment_type") == "federated":
+                    final_model = result.get("global_model")
+                    checkpoint = final_model.get("checkpoint") if isinstance(final_model, dict) else None
+                    linked_input = config.get("integrated_experiment_id") and (
+                        config.get("continuous_scenario", {}).get("security_scenario") == "normal"
+                    )
+                    if not linked_input and isinstance(checkpoint, str) and checkpoint:
+                        path = Path(checkpoint)
+                        if path.suffix == ".pt" and path.resolve().is_relative_to(self.results_dir.resolve()) and path.is_file():
+                            export_path = path
+                    if export_path is None:
+                        export_path = self._save_final_global_model_for_dlg(config)
+                log_path, result_path, chart_path = save_experiment_outputs(
+                    self.results_dir, config, self.state["round_results"],
+                    **({"final_test": final_test} if final_test is not None else {}),
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                runtime_logger.exception("manager final output failed experiment=%s round=%s", config["experiment_id"], round_id)
+                with self.lock:
+                    if self.config["experiment_id"] == config["experiment_id"] and self.state["status"] == "running":
+                        self.state.update(status="failed", message=f"{round_id}번 라운드 최종 결과 저장 실패: {exc}")
+                return round_path
             with self.lock:
                 self.state.update(
                     status="completed",
@@ -2278,7 +2462,7 @@ class ExperimentManager:
                         str(export_path) if export_path is not None else None
                     ),
                     message=(
-                        f"실험이 완료되었습니다. DLG용 전역 모델 저장: {export_path}"
+                        f"실험이 완료되었습니다. 최종 전역 모델: {export_path}"
                         if export_path is not None
                         else "실험이 완료되었습니다."
                     ),
@@ -2319,10 +2503,8 @@ class ExperimentManager:
         )
         export_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = export_path.with_suffix(".json.tmp")
-        temporary_path.write_text(
-            json.dumps(model, ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
+        with temporary_path.open("w", encoding="utf-8") as output:
+            json.dump(model, output, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         temporary_path.replace(export_path)
         return export_path
 

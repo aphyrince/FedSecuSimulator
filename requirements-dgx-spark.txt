@@ -1,3 +1,4 @@
 Flask
 filelock
 python-dotenv
+openpyxl>=3.1,<4

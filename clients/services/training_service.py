@@ -7,14 +7,18 @@ import time
 
 from clients.services.local_training import train_local_model
 from clients.services.local_training import count_dataset_samples
-from common.model import weights_hash, weights_norm
+from common.model import encode_weights, weights_hash, weights_norm
+from common.runtime_log import runtime_logger
 from common.training import TrainingSettings
+from fedsec.models.resnet18 import RESNET18_FORMAT
 
 
 def run_local_training(
     state,
     client_id: int,
     global_model: dict[str, Any],
+    *,
+    tensor_payload: bool = False,
 ) -> dict[str, Any]:
     """전역 모델 수신부터 로컬 학습, 업데이트 추출까지 수행한다."""
     round_id = int(global_model.get("round", 1))
@@ -40,6 +44,11 @@ def run_local_training(
     )
     training_started_at = datetime.now(timezone.utc)
     started_clock = time.monotonic()
+    experiment_id = global_model.get("experiment_id")
+    runtime_logger.info(
+        "client training started experiment=%s round=%s client=%s samples=%s device=%s",
+        experiment_id, round_id, client_id, total_samples, settings.device,
+    )
     training_result = train_local_model(
         global_model=global_model,
         dataset_range=state.dataset_range,
@@ -47,6 +56,7 @@ def run_local_training(
         round_id=round_id,
         client_id=client_id,
         progress_callback=state.update_training_progress,
+        **({"tensor_payload": True} if tensor_payload else {}),
     )
     extracted_update = {"values": training_result["model_delta"],
                         "update_norm": weights_norm(training_result["model_delta"])}
@@ -61,7 +71,16 @@ def run_local_training(
         "extracted_update": extracted_update,
         **training_result,
     }
+    runtime_logger.info(
+        "client training finished experiment=%s round=%s client=%s elapsed_s=%.2f; saving checkpoint",
+        experiment_id, round_id, client_id, training_record["training_duration_seconds"],
+    )
+    save_started = time.monotonic()
     state.save_training(training_record)
+    runtime_logger.info(
+        "client checkpoint saved experiment=%s round=%s client=%s elapsed_s=%.2f",
+        experiment_id, round_id, client_id, time.monotonic() - save_started,
+    )
     return training_record
 
 
@@ -69,6 +88,8 @@ def build_round_update(
     state,
     client_id: int,
     request_payload: dict[str, Any],
+    *,
+    tensor_payload: bool = False,
 ) -> dict[str, Any]:
     """학습된 로컬 업데이트를 중앙 서버 제출 형식으로 만든다."""
     round_id = int(request_payload.get("round", 1))
@@ -80,6 +101,17 @@ def build_round_update(
         raise ValueError("The submission deadline has expired")
     extracted_update = training.get("extracted_update", {})
     model_delta = extracted_update["update_norm"]
+    local_model = training["local_model"]
+    values = extracted_update["values"]
+    if tensor_payload:
+        # Training replaces these snapshots on the next round. Submission reads them only.
+        local_model = local_model.copy()
+    elif local_model.get("architecture") == RESNET18_FORMAT:
+        local_model = {**local_model, "weights": encode_weights(local_model["weights"])}
+        values = encode_weights(values)
+    else:
+        local_model = deepcopy(local_model)
+        values = deepcopy(values)
 
     malicious = bool(request_payload.get("malicious", False))
     attacked = malicious and bool(request_payload.get("attack_enabled", False))
@@ -96,10 +128,10 @@ def build_round_update(
         "training_started_at": training.get("training_started_at") if has_round_training else None,
         "training_completed_at": training.get("training_completed_at") if has_round_training else None,
         "training_duration_seconds": training.get("training_duration_seconds") if has_round_training else None,
-        "local_model": deepcopy(training["local_model"]),
+        "local_model": local_model,
         "dataset_fingerprint": training["dataset_fingerprint"],
         "update": {
-            "values": deepcopy(extracted_update["values"]),
+            "values": values,
             "definition": "local_final_minus_global_start",
             "model_delta": model_delta,
             "scale": 1.0,

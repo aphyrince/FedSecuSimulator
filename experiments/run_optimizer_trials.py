@@ -4,6 +4,7 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
+from experiments.trial_candidates import ADAM_TRAINING
 from experiments.trial_configs import add_run_options, read_validation_config, run_configs
 from fedsec.validation import dropout_probability
 
@@ -23,7 +24,7 @@ def main(argv: list[str] | None = None):
                 raise ValueError("E27 기준 설정의 옵티마이저는 SGD여야 합니다.")
             payload = deepcopy(base)
             payload["experiment_id"] = "E27_adam"
-            payload["experiment"]["training"].update(optimizer="adam", learning_rate=0.001, momentum=0.0)
+            payload["experiment"]["training"].update(ADAM_TRAINING)
             configs.append(payload)
         if args.trial != "E27":
             if args.runner_up_dropout is None:

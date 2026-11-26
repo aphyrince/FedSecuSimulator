@@ -1,0 +1,36 @@
+{
+  "experiment_type": "federated",
+  "num_rounds": 80,
+  "seed": 101,
+  "model_config": {
+    "architecture": "resnet18_cifar10_v1",
+    "dropout": 0.2
+  },
+  "local_epochs": 1,
+  "batch_size": 32,
+  "learning_rate": 0.05,
+  "optimizer": "sgd",
+  "momentum": 0.9,
+  "weight_decay": 0.0,
+  "augmentation": "flip_crop_jitter",
+  "device": "auto",
+  "num_workers": 0,
+  "torch_threads": 4,
+  "max_train_samples": null,
+  "max_test_samples": null,
+  "participation_rate": 1.0,
+  "data_protocol": "e32",
+  "data_distribution": "iid",
+  "attack_enabled": false,
+  "defense_enabled": false,
+  "defense": "none",
+  "malicious_clients": [0, 1],
+  "delay_clients": [],
+  "virtual_timing": {
+    "normal_arrival_seconds": 1.0,
+    "delayed_arrival_seconds": 8.0,
+    "deadline_seconds": 5.0
+  },
+  "round_configs": [],
+  "use_pretrained_global_model": false
+}

@@ -14,6 +14,10 @@ from fedsec.tensors import copy_state, extract_update
 from fedsec.validation import positive_int
 
 
+class NonFiniteLossError(ValueError):
+    """학습 또는 평가 배치의 손실이 유한하지 않다."""
+
+
 def _limited(dataset: Dataset, limit: int | None) -> Dataset:
     if len(dataset) == 0:
         raise ValueError("Dataset is empty")
@@ -60,7 +64,8 @@ def train_local_model(global_model: nn.Module, dataset: Dataset, settings: Train
             logits = model(images)
             loss = nn.functional.cross_entropy(logits, labels)
             if not torch.isfinite(loss).item():
-                raise ValueError("Training loss is NaN/Infinity")
+                raise NonFiniteLossError(f"Training loss is NaN/Infinity (round={round_id}, client={client_id}, "
+                                         f"epoch={epoch}, batch={count // settings.batch_size + 1})")
             loss.backward()
             optimizer.step()
             count += len(labels)
@@ -75,7 +80,8 @@ def train_local_model(global_model: nn.Module, dataset: Dataset, settings: Train
 
 
 def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: TrainingSettings,
-                          *, seed: int = 42) -> EvaluationResult:
+                          *, seed: int = 42,
+                          record_matches: Callable[[torch.Tensor], None] | None = None) -> EvaluationResult:
     device = setup_runtime(settings, seed)
     dataset = _limited(dataset, settings.max_test_samples)
     loader = DataLoader(dataset, batch_size=settings.batch_size, shuffle=False, num_workers=settings.num_workers)
@@ -90,9 +96,11 @@ def evaluate_global_model(global_model: nn.Module, dataset: Dataset, settings: T
             logits = model(images)
             loss = nn.functional.cross_entropy(logits, labels, reduction="sum")
             if not torch.isfinite(loss).item():
-                raise ValueError("Evaluation loss is NaN/Infinity")
+                raise NonFiniteLossError(f"Evaluation loss is NaN/Infinity (batch={count // settings.batch_size + 1})")
             loss_sum += loss.item()
             matches = (logits.argmax(1) == labels).cpu()
+            if record_matches is not None:
+                record_matches(matches)
             labels = labels.cpu()
             class_samples += torch.bincount(labels, minlength=10)
             class_correct += torch.bincount(labels[matches], minlength=10)

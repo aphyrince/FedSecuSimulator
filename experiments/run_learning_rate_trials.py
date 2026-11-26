@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from experiments.trial_candidates import LEARNING_RATES
 from fedsec.__main__ import main as run_model_trials
 
 
@@ -14,7 +15,6 @@ MODEL_CONFIGS = {
     "E04": "e04_cnn4.json",
     "E05": "e05_resnet18.json",
 }
-LEARNING_RATES = (0.01, 0.02, 0.05, 0.10)
 TRIAL_IDS = tuple(f"E{number:02d}" for number in range(6, 14))
 
 

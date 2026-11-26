@@ -11,6 +11,7 @@ from flask import Flask
 from werkzeug.serving import make_server
 
 from server.routes.api import api_bp
+from common.runtime_log import configure_runtime_logging
 
 
 def create_app(host: str, port: int):
@@ -32,6 +33,9 @@ def create_app(host: str, port: int):
         "delayed_clients": [],
     }
     app.extensions["dataset_range"] = {}
+    app.extensions["final_test_range"] = None
+    app.extensions["final_test_lock"] = threading.Lock()
+    app.extensions["final_test_evaluation"] = None
     app.extensions["clients"] = {}
     app.extensions["round_config"] = {}
     app.extensions["available_clients"] = {}
@@ -68,6 +72,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    configure_runtime_logging("server")
     flask_app = create_app(args.host, args.port)
     http_server = make_server(args.host, args.port, flask_app, threaded=True)
     flask_app.extensions["server"] = http_server

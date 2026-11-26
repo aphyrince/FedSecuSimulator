@@ -1,8 +1,10 @@
 """REST 모델 직렬화와 체크포인트 처리. 모델 구조는 fedsec.model에서 정의한다."""
 
 from copy import deepcopy
+import base64
 import hashlib
 from pathlib import Path
+import numpy as np
 import torch
 from fedsec.checkpoint import load_checkpoint
 from fedsec.model import (
@@ -38,6 +40,28 @@ def decode_weights(weights: dict, reference: dict | None = None) -> dict:
 
 def encode_weights(state: dict) -> dict:
     return {name: tensor.tolist() for name, tensor in decode_weights(state).items()}
+
+
+def encode_wire_weights(state: dict) -> dict:
+    return {
+        name: {"shape": list(tensor.shape), "data": base64.b64encode(
+            tensor.numpy().astype("<f4", copy=False).tobytes(order="C")
+        ).decode("ascii")}
+        for name, tensor in decode_weights(state).items()
+    }
+
+
+def decode_wire_weights(state: dict) -> dict:
+    if not isinstance(state, dict):
+        raise ValueError("Encoded weights must be a state dictionary")
+    weights = {}
+    for name, entry in state.items():
+        shape = entry["shape"]
+        if not isinstance(shape, list) or any(type(size) is not int or size < 1 for size in shape):
+            raise ValueError("Invalid encoded tensor shape")
+        raw = base64.b64decode(entry["data"], validate=True)
+        weights[name] = np.frombuffer(raw, dtype="<f4").reshape(shape).astype(np.float32, copy=True)
+    return weights
 
 
 def weights_hash(weights: dict) -> str:
@@ -81,7 +105,8 @@ def save_model_checkpoint(payload: dict, path: Path) -> None:
                 "weights": state, "model_hash": weights_hash(state)}, path)
 
 
-def load_model_checkpoint(path: str | Path) -> dict:
+def load_model_checkpoint(path: str | Path, *, tensor_payload: bool = False) -> dict:
     payload = load_checkpoint(path)
-    payload["weights"] = encode_weights(payload["weights"])
+    if not tensor_payload:
+        payload["weights"] = encode_weights(payload["weights"])
     return payload

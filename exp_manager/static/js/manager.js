@@ -1,4 +1,11 @@
 let dataDistributed = false;
+let sequentialClientsEnabled = false;
+let defaultRoundDelayClients = [];
+const virtualTimingInputs = {
+  normal_arrival_seconds: 'virtual-normal-arrival',
+  delayed_arrival_seconds: 'virtual-delayed-arrival',
+  deadline_seconds: 'virtual-deadline',
+};
 
 async function control(path) {
   const response = await fetch(path, { method: 'POST' });
@@ -15,6 +22,26 @@ async function startExperiment() {
     return;
   }
   await control('/api/experiment/start');
+}
+
+async function applySelectedFedAvgConfig(button, statusId = 'config-save-status') {
+  const status = document.getElementById(statusId);
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/experiment/config/selected-fedavg', { method: 'POST' });
+    const config = await response.json();
+    if (!response.ok) {
+      throw new Error(config.error || '설정을 적용하지 못했습니다.');
+    }
+    await loadExperimentConfig(config, { preserveLinkedCases: true });
+    status.dataset.state = 'success';
+    status.textContent = 'SmallCNN E25 학습 설정을 적용했습니다.';
+  } catch (error) {
+    status.dataset.state = 'error';
+    status.textContent = `설정 적용 실패: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function saveExperimentConfig(
@@ -45,6 +72,12 @@ async function saveExperimentConfig(
     learning_rate: Number(document.getElementById('learning-rate').value),
     device: document.getElementById('device').value,
     round_timeout: Number(document.getElementById('round-timeout').value),
+    ...(sequentialClientsEnabled && {
+      delay_clients: defaultRoundDelayClients,
+      virtual_timing: Object.fromEntries(Object.entries(virtualTimingInputs).map(([key, id]) => [
+        key, Number(document.getElementById(id).value),
+      ])),
+    }),
     max_train_samples: document.getElementById('max-train-samples').value === ''
       ? null
       : Number(document.getElementById('max-train-samples').value),
@@ -63,7 +96,9 @@ async function saveExperimentConfig(
     malicious_clients: document
       .getElementById('malicious')
       .value.split(',')
-      .map((value) => Number(value.trim()))
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map(Number)
       .filter((value) => Number.isInteger(value)),
     round_configs: readRoundConfigs(),
   };
@@ -85,6 +120,7 @@ async function saveExperimentConfig(
     }
     saveStatus.dataset.state = 'success';
     saveStatus.textContent = '설정 저장이 완료되었습니다.';
+    renderFederatedModelSettings(savedConfig);
     if (savedConfig.pretrained_global_model_loaded) {
       document.getElementById('pretrained-model-status').textContent =
         `전역 모델 체크포인트를 저장했습니다 (버전 ${savedConfig.pretrained_global_model_version ?? 0}).`;
@@ -131,6 +167,7 @@ function applyExperimentTemplate(templateName) {
   const savedConfigs = document.querySelector('#round-configs tr')
     ? readRoundConfigs()
     : roundConfigsByExperimentType.federated;
+  defaultRoundDelayClients = template.delayClients;
   buildRoundEditor(savedConfigs);
 
   document.getElementById('participation').value = template.participation;
@@ -402,8 +439,9 @@ function applyExperimentTemplate(templateName) {
         const pairedPool = data.comparison_protocol ? ' · 공통 비교 이미지 풀' : '';
         statusElement.textContent =
           `${data.message} · ${displayDistribution} · 전체 ${totalSamples.toLocaleString()}장 · 이미지 집합 ${imageSetId}${pairedPool}`;
-        sourceElement.textContent =
-          `훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
+        sourceElement.textContent = data.evaluation_sets
+          ? `라운드 검증 ${data.evaluation_sets.validation.sample_count.toLocaleString()}장 · 공식 최종 테스트 ${data.evaluation_sets.test.sample_count.toLocaleString()}장`
+          : `훈련 파일: ${data.config.train_files.join(', ') || '자동 탐색'} · 테스트 파일: ${data.config.test_files.join(', ') || '자동 탐색'}`;
         if (isIntegratedMode) {
           methodElement.textContent =
             '통합 실험은 IID와 Non-IID를 모두 실행합니다. 각 분포의 클라이언트별 할당을 함께 표시합니다.';
@@ -502,9 +540,28 @@ function applyExperimentTemplate(templateName) {
         await refreshDataStatus();
       }
 
-      async function loadExperimentConfig() {
-        const response = await fetch('/api/experiment/config');
-        const config = await response.json();
+      function renderFederatedModelSettings(config) {
+        const details = [
+          config.model_config?.architecture ?? 'small_cnn_v1',
+          `드롭아웃 ${config.model_config?.dropout ?? 0}`,
+          `${config.optimizer.toUpperCase()} (모멘텀 ${config.momentum}, weight decay ${config.weight_decay})`,
+          `증강 ${config.augmentation ?? '없음'}`,
+        ].join(' · ');
+        document.getElementById('federated-model-settings').textContent = details;
+        document.getElementById('linked-federated-model-settings').textContent = details;
+      }
+
+      async function loadExperimentConfig(config, { preserveLinkedCases = false } = {}) {
+        if (!config) {
+          const response = await fetch('/api/experiment/config');
+          config = await response.json();
+        }
+        renderFederatedModelSettings(config);
+        sequentialClientsEnabled = Boolean(config.sequential_clients);
+        defaultRoundDelayClients = config.delay_clients || [];
+        for (const [key, id] of Object.entries(virtualTimingInputs)) {
+          document.getElementById(id).value = config.virtual_timing?.[key] ?? '';
+        }
         document.getElementById('experiment-id').value = config.experiment_id;
         document.getElementById('rounds').value = config.num_rounds;
         document.getElementById('experiment-type').value = config.experiment_type || 'federated';
@@ -545,7 +602,11 @@ function applyExperimentTemplate(templateName) {
         buildRoundEditor(config.round_configs || []);
         setLinkedSharedSettings(config);
         resetContinuousCases();
-        resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
+        if (preserveLinkedCases) {
+          document.getElementById('linked-shared-rounds').dispatchEvent(new Event('change'));
+        } else {
+          resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
+        }
         updateConditionalSettings();
       }
 
@@ -576,6 +637,8 @@ function applyExperimentTemplate(templateName) {
         document.getElementById('dlg-tab').classList.toggle('active', dlgEnabled);
         document.getElementById('dlg-tab').setAttribute('aria-selected', String(dlgEnabled));
         document.getElementById('experiment-templates').hidden = dlgEnabled;
+        document.getElementById('selected-fedavg-setting').hidden = dlgEnabled;
+        document.getElementById('virtual-timing-settings').hidden = dlgEnabled || !sequentialClientsEnabled;
 
         const dlgDefenseEnabled = document.getElementById('dlg-defense-enabled').checked;
         document.getElementById('dlg-noise-setting').hidden =

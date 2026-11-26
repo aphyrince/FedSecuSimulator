@@ -6,11 +6,9 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from experiments.trial_candidates import DROPOUT_TRIALS
 from fedsec.__main__ import _read_config, main as run_model_trials
 from fedsec.validation import finite_number
-
-
-DROPOUT_TRIALS = {"E14": 0.1, "E15": 0.2, "E16": 0.3, "E17": 0.4}
 
 
 def main(argv: list[str] | None = None):

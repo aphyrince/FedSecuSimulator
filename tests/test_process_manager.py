@@ -1,4 +1,5 @@
 import subprocess
+import signal
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -8,6 +9,21 @@ from exp_manager.services.process_manager import ProcessManager
 
 
 class ProcessManagerTests(unittest.TestCase):
+    def test_unexpected_exit_records_signal_but_cleanup_does_not(self):
+        process = Mock(pid=123)
+        process.wait.return_value = -signal.SIGSEGV
+        manager = ProcessManager("127.0.0.1", 1, 5000, 5101)
+        manager.client_processes[0] = process
+
+        with self.assertLogs("fedsec.runtime", level="ERROR") as logs:
+            manager._watch_process(process, 0)
+        self.assertIn("client_id=0 child_pid=123", logs.output[0])
+        self.assertIn("signal=SIGSEGV", logs.output[0])
+
+        manager.client_processes.clear()
+        with self.assertNoLogs("fedsec.runtime", level="ERROR"):
+            manager._watch_process(process, 0)
+
     def test_stop_waits_after_terminate_and_kill(self):
         process = Mock()
         process.wait.side_effect = [

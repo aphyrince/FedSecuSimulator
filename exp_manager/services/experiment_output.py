@@ -7,9 +7,27 @@ from pathlib import Path
 
 ROUND_LOG_FIELDS = [
     "experiment_id",
+    "seed",
     "round",
+    "start_model_version",
+    "start_model_hash",
+    "end_model_version",
+    "end_model_hash",
     "selected_clients",
+    "trained_clients",
     "accepted_clients",
+    "unselected_clients",
+    "excluded_clients",
+    "selected_count",
+    "trained_count",
+    "accepted_count",
+    "accepted_samples",
+    "unselected_count",
+    "excluded_count",
+    "virtual_deadline_seconds",
+    "virtual_elapsed_seconds",
+    "virtual_last_arrival_seconds",
+    "real_elapsed_seconds",
     "delayed_clients",
     "malicious_selected",
     "malicious_accepted",
@@ -32,6 +50,7 @@ ROUND_LOG_FIELDS = [
     "model_updated",
     "accuracy",
     "loss",
+    "evaluation",
     "reason",
     "timestamp",
 ]
@@ -63,12 +82,16 @@ def save_round_result(results_dir: Path, config: dict, result: dict) -> Path:
 
 
 def save_experiment_outputs(
-    results_dir: Path, config: dict, round_results: list[dict]
+    results_dir: Path, config: dict, round_results: list[dict], *, final_test: dict | None = None
 ):
     experiment_dir = experiment_output_directory(results_dir, config)
     experiment_dir.mkdir(parents=True, exist_ok=True)
     log_path = experiment_dir / "rounds.csv"
     result_path = experiment_dir / "results.json"
+    if final_test is not None:
+        (experiment_dir / "final_test.json").write_text(
+            json.dumps(final_test, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
 
     with log_path.open("w", newline="", encoding="utf-8-sig") as output:
         writer = csv.DictWriter(output, fieldnames=ROUND_LOG_FIELDS)
@@ -94,6 +117,7 @@ def save_experiment_outputs(
                 "config": config,
                 "round_results": round_results,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
+                **({"final_test": final_test} if final_test is not None else {}),
             },
             ensure_ascii=False,
             indent=2,

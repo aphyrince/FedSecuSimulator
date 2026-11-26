@@ -11,6 +11,7 @@ from werkzeug.serving import make_server
 
 from clients.routes.api import api_bp
 from clients.services.client_state import ClientState
+from common.runtime_log import configure_runtime_logging
 
 
 
@@ -36,6 +37,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    configure_runtime_logging(f"client-{args.client_id}")
     flask_app = create_app(args.client_id, args.port)
     flask_app.config["SERVER_URL"] = args.server_url.rstrip("/")
     http_server = make_server(args.host, args.port, flask_app, threaded=True)

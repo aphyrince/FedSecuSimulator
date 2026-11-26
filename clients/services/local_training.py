@@ -22,7 +22,8 @@ def count_dataset_samples(dataset_range: dict) -> int:
 
 def train_local_model(global_model: dict, dataset_range: dict, training_config: dict,
                       round_id: int, client_id: int,
-                      progress_callback: Callable[[int, int, int, int], None] | None = None) -> dict:
+                      progress_callback: Callable[[int, int, int, int], None] | None = None,
+                      *, tensor_payload: bool = False) -> dict:
     settings = TrainingSettings.from_dict(training_config)
     dataset = CifarRangeDataset(dataset_range, settings.max_train_samples)
     deadline = global_model.get("update_deadline")
@@ -38,8 +39,10 @@ def train_local_model(global_model: dict, dataset_range: dict, training_config: 
                         progress_callback=progress_callback)
     local = {key: deepcopy(value) for key, value in global_model.items()
              if key not in ("weights", "training_config", "update_deadline", "round_context")}
-    local.update(weights=encode_weights(result.weights), model_version=int(global_model["model_version"]) + 1)
-    return {"local_model": local, "model_delta": encode_weights(result.delta), "num_samples": result.num_samples,
+    local.update(weights=result.weights if tensor_payload else encode_weights(result.weights),
+                 model_version=int(global_model["model_version"]) + 1)
+    return {"local_model": local, "model_delta": result.delta if tensor_payload else encode_weights(result.delta),
+            "num_samples": result.num_samples,
             "training_loss": result.history[-1]["loss"], "training_accuracy": result.history[-1]["accuracy"],
             "history": result.history, "dataset_fingerprint": dataset.fingerprint,
             "training_config": settings.to_dict(), "base_model_hash": weights_hash(global_model["weights"]),

@@ -61,6 +61,97 @@ def linked_payload():
     }
 
 
+def test_linked_resnet_is_rejected_before_creating_a_batch(tmp_path):
+    manager = ExperimentManager(LinkedProcessManager(), tmp_path, client_count=10)
+    manager.update_config({"model_config": {"architecture": "resnet18_cifar10_v1"}})
+    app = Flask(__name__)
+    app.extensions["experiment_manager"] = manager
+    app.register_blueprint(experiment_bp)
+
+    response = app.test_client().post("/api/experiment/continuous/linked/start", json={
+        "cases": all_cases(), "dlg": linked_payload(),
+    })
+
+    assert response.status_code == 409
+    assert "small_cnn_v1" in response.json["error"]
+    assert manager.status()["status"] == "idle"
+    assert not list(tmp_path.iterdir())
+
+
+def test_selected_smallcnn_configuration_reaches_integrated_fl_rounds(tmp_path):
+    manager = ExperimentManager(LinkedProcessManager(), tmp_path, client_count=10)
+    app = Flask(__name__)
+    app.extensions["experiment_manager"] = manager
+    app.register_blueprint(experiment_bp)
+    client = app.test_client()
+    applied = client.post("/api/experiment/config/selected-fedavg")
+    assert applied.status_code == 200
+    training = {
+        "model_config": {"architecture": "small_cnn_v1", "channels": [32, 64], "hidden_size": 128, "dropout": 0.0},
+        "learning_rate": 0.02, "optimizer": "sgd", "momentum": 0.9, "weight_decay": 0.0,
+        "augmentation": "flip_crop", "batch_size": 32, "local_epochs": 1, "device": "cuda",
+    }
+    assert applied.json["data_protocol"] == "e32"
+    assert applied.json["use_pretrained_global_model"] is False
+    with patch("exp_manager.services.experiment_runner.threading.Thread") as worker:
+        response = client.post("/api/experiment/continuous/linked/start",
+                               json={"cases": all_cases(), "dlg": linked_payload()})
+    assert response.status_code == 200
+    cases, manifest = worker.call_args.kwargs["args"][:2]
+    assert len(cases) == 24
+    for case, saved in zip(cases, manifest["cases"]):
+        assert case["seed"] == 42 and case["num_rounds"] == 80
+        for config in (manager._round_config(80, case), saved["configuration"]):
+            assert {key: config[key] for key in training} == training
+
+
+def test_linked_setup_failure_identifies_the_case_that_failed(tmp_path):
+    manager = ExperimentManager(LinkedProcessManager(), tmp_path, client_count=10)
+    with patch("exp_manager.services.experiment_runner.threading.Thread") as worker:
+        manager.start_continuous_linked_experiments(all_cases(), linked_payload())
+    args = worker.call_args.kwargs["args"]
+    manifest_path = args[2]
+    with (
+        patch.object(manager, "_start_round", side_effect=lambda *_: manager.state.update(status="completed")),
+        patch.object(manager, "_write_continuous_experiment_info", side_effect=[None, OSError("metadata write failed")]),
+    ):
+        manager._run_continuous_experiments(*args)
+
+    saved = json.loads(manifest_path.read_text())
+    batch = manager.status()["continuous_experiment"]
+    assert saved["status"] == batch["status"] == "failed"
+    assert saved["current_case"] == batch["current_case"] == 2
+    assert batch["current_case_name"] == saved["cases"][1]["name"]
+    assert [item["status"] for item in saved["cases"][:3]] == ["completed", "failed", "pending"]
+    assert saved["cases"][1]["message"] == "metadata write failed"
+
+
+def test_final_checkpoint_export_error_ends_the_case_and_preserves_round_log(tmp_path):
+    manager = ExperimentManager(LinkedProcessManager(), tmp_path, client_count=10)
+    manager.update_config({"experiment_id": "output-failure", "num_rounds": 1})
+    manager.state["status"] = "running"
+    with patch.object(manager, "_save_final_global_model_for_dlg", side_effect=OSError("disk full")):
+        path = manager.record_round_result(
+            {"experiment_id": "output-failure", "round": 1, "accuracy": 0.5, "loss": 1.0},
+            advance=True,
+        )
+    assert json.loads(path.read_text())["accuracy"] == 0.5
+    assert manager.status()["status"] == "failed"
+    assert "disk full" in manager.status()["message"]
+
+
+def test_manifest_write_failure_still_ends_batch_in_status_api(tmp_path):
+    manager = ExperimentManager(LinkedProcessManager(), tmp_path, client_count=10)
+    with patch("exp_manager.services.experiment_runner.threading.Thread") as worker:
+        manager.start_continuous_linked_experiments(all_cases(), linked_payload())
+    with patch.object(manager, "_write_continuous_manifest", side_effect=OSError("manifest unavailable")):
+        manager._run_continuous_experiments(*worker.call_args.kwargs["args"])
+
+    status = manager.status()
+    assert status["status"] == status["continuous_experiment"]["status"] == "failed"
+    assert status["continuous_experiment"]["cases"][0]["message"] == "manifest unavailable"
+
+
 def test_linked_start_creates_24_fl_and_12_normal_checkpoint_dlg_cases():
     with tempfile.TemporaryDirectory() as temporary:
         manager = ExperimentManager(

@@ -6,7 +6,7 @@ from exp_manager.utils.project_root_path import PROJECT_ROOT_PATH
 
 
 experiment_bp = Blueprint("experiment", __name__)
-SELECTED_FEDAVG_CONFIG = PROJECT_ROOT_PATH / "configs" / "e32_selected_fedavg.json"
+SELECTED_FEDAVG_CONFIG = PROJECT_ROOT_PATH / "configs" / "smallcnn_e25_fedavg.json"
 
 
 @experiment_bp.get("/api/experiment/config")
@@ -27,12 +27,12 @@ def set_config():
 
 @experiment_bp.post("/api/experiment/config/selected-fedavg")
 def apply_selected_fedavg_config():
-    """독립 정상 실험 E32에서 확인한 최종 모델과 학습 설정을 적용한다."""
+    """SmallCNN 검증에서 선택된 E25의 모델 구조와 학습 설정을 적용한다."""
     try:
         preset = json.loads(SELECTED_FEDAVG_CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        current_app.logger.exception("Could not load the E32 FedAvg preset")
-        return jsonify(error="E32 정상 FedAvg 설정을 불러오지 못했습니다."), 500
+        current_app.logger.exception("Could not load the SmallCNN E25 FedAvg preset")
+        return jsonify(error="SmallCNN E25 설정을 불러오지 못했습니다."), 500
     manager = current_app.extensions["experiment_manager"]
     try:
         manager.update_config(preset)
@@ -63,7 +63,7 @@ def start_continuous():
                 cases
             )
         )
-    except (RuntimeError, ValueError, TypeError) as exc:
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
         return jsonify(error=str(exc)), 409
 
 

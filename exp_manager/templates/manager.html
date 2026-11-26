@@ -106,7 +106,7 @@
         <section id="individual-mode-panel" role="tabpanel" aria-labelledby="individual-mode-tab">
         <div id="selected-fedavg-setting">
           <button id="selected-fedavg-button" class="secondary" type="button"
-            onclick="applySelectedFedAvgConfig()">최종 ResNet-18 정상 FedAvg 설정 적용</button>
+            onclick="applySelectedFedAvgConfig(this)">SmallCNN E25 설정 적용</button>
           <p id="federated-model-settings"></p>
         </div>
         <div class="form-grid">
@@ -575,6 +575,9 @@
           <section class="linked-shared-settings" aria-labelledby="linked-shared-settings-title">
             <h4 id="linked-shared-settings-title">공통 연합학습 설정</h4>
             <p>공통 학습 설정은 24개 실험에 적용됩니다. 참여율은 라운드별 설정에서 조정하며, 기본은 100%, 부분 참여 환경만 50%입니다.</p>
+            <button type="button" class="secondary"
+              onclick="applySelectedFedAvgConfig(this, 'linked-config-save-status')">SmallCNN E25 설정 적용</button>
+            <p id="linked-federated-model-settings"></p>
             <div class="linked-shared-settings-grid">
               <label>라운드 수<input id="linked-shared-rounds" type="number" min="1" value="10"></label>
               <label>시드<input id="linked-shared-seed" type="number" min="0" value="42"></label>

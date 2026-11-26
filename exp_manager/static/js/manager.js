@@ -24,9 +24,8 @@ async function startExperiment() {
   await control('/api/experiment/start');
 }
 
-async function applySelectedFedAvgConfig() {
-  const button = document.getElementById('selected-fedavg-button');
-  const status = document.getElementById('config-save-status');
+async function applySelectedFedAvgConfig(button, statusId = 'config-save-status') {
+  const status = document.getElementById(statusId);
   button.disabled = true;
   try {
     const response = await fetch('/api/experiment/config/selected-fedavg', { method: 'POST' });
@@ -34,9 +33,9 @@ async function applySelectedFedAvgConfig() {
     if (!response.ok) {
       throw new Error(config.error || '설정을 적용하지 못했습니다.');
     }
-    await loadExperimentConfig(config);
+    await loadExperimentConfig(config, { preserveLinkedCases: true });
     status.dataset.state = 'success';
-    status.textContent = '최종 정상 FedAvg 설정을 적용했습니다.';
+    status.textContent = 'SmallCNN E25 학습 설정을 적용했습니다.';
   } catch (error) {
     status.dataset.state = 'error';
     status.textContent = `설정 적용 실패: ${error.message}`;
@@ -542,15 +541,17 @@ function applyExperimentTemplate(templateName) {
       }
 
       function renderFederatedModelSettings(config) {
-        document.getElementById('federated-model-settings').textContent = [
+        const details = [
           config.model_config?.architecture ?? 'small_cnn_v1',
           `드롭아웃 ${config.model_config?.dropout ?? 0}`,
           `${config.optimizer.toUpperCase()} (모멘텀 ${config.momentum}, weight decay ${config.weight_decay})`,
           `증강 ${config.augmentation ?? '없음'}`,
         ].join(' · ');
+        document.getElementById('federated-model-settings').textContent = details;
+        document.getElementById('linked-federated-model-settings').textContent = details;
       }
 
-      async function loadExperimentConfig(config) {
+      async function loadExperimentConfig(config, { preserveLinkedCases = false } = {}) {
         if (!config) {
           const response = await fetch('/api/experiment/config');
           config = await response.json();
@@ -601,7 +602,11 @@ function applyExperimentTemplate(templateName) {
         buildRoundEditor(config.round_configs || []);
         setLinkedSharedSettings(config);
         resetContinuousCases();
-        resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
+        if (preserveLinkedCases) {
+          document.getElementById('linked-shared-rounds').dispatchEvent(new Event('change'));
+        } else {
+          resetContinuousCases('continuous-linked-experiments', 'continuous-linked-fl-status');
+        }
         updateConditionalSettings();
       }
 

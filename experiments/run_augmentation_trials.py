@@ -4,13 +4,8 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
+from experiments.trial_candidates import AUGMENTATION_TRIALS as TRIALS
 from experiments.trial_configs import add_run_options, read_validation_config, run_configs
-
-
-TRIALS = {
-    "E18": "flip", "E19": "crop", "E20": "flip_crop",
-    "E21": "flip_crop_jitter", "E22": "flip_crop_cutout",
-}
 
 
 def main(argv: list[str] | None = None):

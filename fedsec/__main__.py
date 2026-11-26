@@ -19,7 +19,7 @@ from fedsec.data import CifarRangeDataset, load_datasets
 from fedsec.experiment import RoundState, run_comparison_experiment, run_federated_learning
 from fedsec.model import MODEL_FORMAT, PREPROCESSING, create_model
 from fedsec.tensors import state_hash
-from fedsec.training import evaluate_global_model
+from fedsec.training import NonFiniteLossError, evaluate_global_model
 
 
 def _write_json(path: Path, payload: dict):
@@ -84,7 +84,8 @@ def _read_config(path: Path, experiment_id_override: str | None) -> tuple[dict, 
             "evaluation_split": evaluation_split, "datasets": datasets}, settings
 
 
-def _run_config(payload: dict, config: ExperimentSettings, directory: Path, *, resume: bool = False):
+def _run_config(payload: dict, config: ExperimentSettings, directory: Path, *, resume: bool = False,
+                record_trial_failure: bool = False):
     directory.mkdir(parents=True, exist_ok=resume)
     try:
         with FileLock(directory / ".run.lock", timeout=0):
@@ -94,7 +95,23 @@ def _run_config(payload: dict, config: ExperimentSettings, directory: Path, *, r
                     raise ValueError(f"저장된 설정과 실행 설정이 일치하지 않습니다. {saved_config}")
             else:
                 _replace_json(saved_config, payload)
-            _train_and_save(payload, config, directory, resume=resume)
+            phase_dir = directory / payload["mode"]
+            failure_path = phase_dir / "failure.json"
+            if record_trial_failure and resume and failure_path.is_file() and not (phase_dir / "results.json").is_file():
+                print(f"[{payload['experiment_id']}] 기록된 실패 사용 | {failure_path}", flush=True)
+                return
+            try:
+                _train_and_save(payload, config, directory, resume=resume)
+            except (NonFiniteLossError, torch.cuda.OutOfMemoryError) as error:
+                if not record_trial_failure:
+                    raise
+                rounds = sorted((phase_dir / "rounds").glob("round_*.json"), key=lambda p: int(p.stem.split("_")[1]))
+                last = json.loads(rounds[-1].read_text(encoding="utf-8")) if rounds else {}
+                failure = {"experiment_id": payload["experiment_id"], "reason": f"{type(error).__name__}: {error}",
+                           "last_completed_round": last.get("round", 0),
+                           "last_validation_accuracy": last.get("accuracy"), "last_validation_loss": last.get("loss")}
+                _replace_json(failure_path, failure)
+                print(f"[{payload['experiment_id']}] 실험 실패 | {error}", flush=True)
     except Timeout as error:
         raise ValueError(f"같은 결과 폴더에서 실험이 이미 진행 중입니다. {directory}") from error
 
@@ -214,6 +231,7 @@ def main(argv: list[str] | None = None):
     parser.add_argument("--output-dir", type=Path, default=Path("results/standalone"))
     parser.add_argument("--dry-run", action="store_true", help="학습 없이 설정을 읽고 실행 순서를 확인합니다.")
     parser.add_argument("--resume", action="store_true", help="같은 실험의 저장된 라운드부터 이어서 실행합니다.")
+    parser.add_argument("--record-trial-failure", action="store_true", help="정상 검증 실험의 손실 발산·GPU 메모리 부족을 파일에 기록합니다.")
     args = parser.parse_args(argv)
     if args.experiment_id is not None and len(args.config) != 1:
         parser.error("--experiment-id는 --config가 하나일 때만 사용할 수 있습니다.")
@@ -230,6 +248,8 @@ def main(argv: list[str] | None = None):
                 raise ValueError(f"같은 결과 폴더를 사용하는 실험이 있습니다: {directory}")
             if args.resume and payload["mode"] == "compare":
                 raise ValueError("--resume은 normal 또는 attack 실험에 사용할 수 있습니다.")
+            if args.record_trial_failure and (payload["mode"] != "normal" or payload["evaluation_split"] != "validation"):
+                raise ValueError("--record-trial-failure에는 정상 학습의 검증 설정이 필요합니다.")
             if directory.exists() and not args.resume:
                 raise FileExistsError(f"새 실험 ID를 사용하세요. 기존 결과: {directory}")
             planned_directories.add(directory)
@@ -246,7 +266,7 @@ def main(argv: list[str] | None = None):
                       f"{'| 최종 테스트 포함 ' if 'final_test_ranges' in payload['datasets'] else ''}"
                       f"| 결과 {directory}")
             else:
-                _run_config(payload, config, directory, resume=args.resume)
+                _run_config(payload, config, directory, resume=args.resume, record_trial_failure=args.record_trial_failure)
     except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
         parser.exit(2, f"오류: {error}\n")
     except KeyboardInterrupt:

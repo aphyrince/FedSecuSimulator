@@ -4,10 +4,8 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
+from experiments.trial_candidates import SCHEDULE_TRIALS as TRIALS
 from experiments.trial_configs import add_run_options, read_validation_config, run_configs
-
-
-TRIALS = {"E23": (30, 1), "E24": (65, 1), "E25": (80, 1), "E26": (40, 2)}
 
 
 def main(argv: list[str] | None = None):

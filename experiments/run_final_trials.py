@@ -2,14 +2,14 @@
 
 import argparse
 from copy import deepcopy
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
+from experiments.trial_candidates import FINAL_SEEDS as SEEDS, add_official_test
 from experiments.trial_configs import add_run_options, read_validation_config, run_configs
 from fedsec.config import ExperimentSettings
 
 
 BASELINE_CONFIG = Path(__file__).resolve().parents[1] / "configs/e02_smallcnn_baseline.json"
-SEEDS = (101, 202, 303)
 GROUPS = ((29, "baseline", "normal"), (32, "selected", "normal"), (35, "selected", "attack"))
 TRIAL_IDS = tuple(f"E{number}" for number in range(29, 38))
 
@@ -31,7 +31,6 @@ def main(argv: list[str] | None = None):
                 raise ValueError("최종 후보와 E02의 CIFAR-10 학습·검증 배정이 같아야 합니다.")
             bases["selected"] = selected
 
-        test_file = PurePosixPath(baseline["datasets"]["test_ranges"][0]["file"]).with_name("test_batch")
         for start, group, mode in GROUPS:
             for number, seed in enumerate(SEEDS, start=start):
                 trial = f"E{number}"
@@ -40,7 +39,7 @@ def main(argv: list[str] | None = None):
                 payload = deepcopy(bases[group])
                 payload["experiment_id"] = f"{trial}_{group}_{mode}_seed{seed}"
                 payload["mode"] = mode
-                payload["datasets"]["final_test_ranges"] = [{"file": test_file.as_posix(), "start": 0, "end": 10000}]
+                add_official_test(payload["datasets"])
                 options = payload["experiment"]
                 options["seed"] = seed
                 options["training"].update(max_train_samples=None, max_test_samples=None)

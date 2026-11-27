@@ -66,6 +66,8 @@ class ExperimentSettings:
     model_config: dict = field(default_factory=dict)
     malicious_clients: tuple[int, ...] = (0, 1)
     attack_scale: float = -5.0
+    defense: str = "none"
+    clip_norm: float = 3.5
 
     def __post_init__(self):
         positive_int(self.num_rounds, "num_rounds")
@@ -78,6 +80,18 @@ class ExperimentSettings:
             raise ValueError("Duplicate malicious client ID")
         object.__setattr__(self, "malicious_clients", ids)
         finite_number(self.attack_scale, "attack_scale")
+        if self.defense not in (
+            "none",
+            "norm_clipping",
+            "coordinate_median",
+        ):
+            raise ValueError("Unsupported defense")
+
+        finite_number(
+            self.clip_norm,
+            "clip_norm",
+            positive=True,
+        )
 
     @classmethod
     def from_dict(cls, values: dict):

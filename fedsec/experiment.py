@@ -6,7 +6,9 @@ import hashlib
 from typing import Callable
 from torch.utils.data import Dataset, Subset
 
-from fedsec.aggregation import aggregate_fedavg
+import math
+
+from fedsec.aggregation import (aggregate_fedavg,clip_client_updates,aggregate_coordinate_median,)
 from fedsec.attack import collude_updates
 from fedsec.comparison import compare_accuracy_results
 from fedsec.config import ExperimentSettings
@@ -61,6 +63,13 @@ def _datasets(config, client_datasets, test_dataset):
                for key in sorted(client_datasets)}
     return clients, _dataset_view(test_dataset, config.training.max_test_samples)
 
+def tensor_state_norm(state) -> float:
+    return math.sqrt(
+        sum(
+            float(t.detach().double().square().sum())
+            for t in state.values()
+        )
+    )
 
 def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int, Dataset],
                            test_dataset: Dataset, *, attack: bool = False,
@@ -89,6 +98,11 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
             record["round"] != number or record["experiment_id"] != experiment_id
             or record["initial_model_hash"] != initial_hash or record["attack_enabled"] != attack
             or record["training_config"] != config.training.to_dict()
+            or record.get("defense", "none") != config.defense
+            or (
+                config.defense == "norm_clipping"
+                and record.get("clip_norm") != config.clip_norm
+            )
             or record["training_datasets"] != training_datasets
             or record["evaluation"]["dataset_fingerprint"] != test_dataset.fingerprint
             for number, record in enumerate(records, start=1)
@@ -104,13 +118,62 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
                 raise ValueError("Local training sample count does not match the assigned dataset")
             updates.append(ClientUpdate(client_id, trained.num_samples, trained.delta))
             training_metrics[str(client_id)] = trained.history
+        clean_update_norms = {
+            str(item.client_id): tensor_state_norm(item.delta)
+            for item in updates
+        }
         if attack:
             # 모든 정상 delta를 모은 뒤 변조한다. 변조한 값을 평균에 다시 섞지 않는다.
             clean = [item.delta for item in updates if item.client_id in config.malicious_clients]
             malicious_delta = collude_updates(clean, config.attack_scale)
             updates = [ClientUpdate(item.client_id, item.num_samples, copy_state(malicious_delta))
                        if item.client_id in config.malicious_clients else item for item in updates]
-        weights = aggregate_fedavg(copy_state(model.state_dict()), updates)
+        submitted_update_norms = {
+            str(item.client_id): tensor_state_norm(item.delta)
+            for item in updates
+        }
+        base = copy_state(model.state_dict())
+
+        if config.defense == "norm_clipping":
+
+            effective_updates = clip_client_updates(
+                base,
+                updates,
+                config.clip_norm,
+            )
+
+            weights = aggregate_fedavg(
+                base,
+                effective_updates,
+            )
+
+        elif config.defense == "coordinate_median":
+
+            effective_updates = updates
+
+            weights = aggregate_coordinate_median(
+                base,
+                updates,
+            )
+
+        else:
+
+            effective_updates = updates
+
+            weights = aggregate_fedavg(
+                base,
+                updates,
+            )
+
+        effective_update_norms = {
+            str(item.client_id): tensor_state_norm(item.delta)
+            for item in effective_updates
+        }
+
+        aggregated_update_norm = tensor_state_norm({
+            name: weights[name] - base[name]
+            for name in base
+        })
         model.load_state_dict(weights)
         evaluation = evaluate_global_model(model, test_dataset, config.training, seed=config.seed)
         record = {"experiment_id": experiment_id, "round": round_id,
@@ -122,7 +185,13 @@ def run_federated_learning(config: ExperimentSettings, client_datasets: dict[int
                                  "num_test_samples": evaluation.num_samples},
                   "attack_enabled": attack, "attack_applied": attack,
                   "attack_scale": config.attack_scale, "malicious_clients": list(config.malicious_clients) if attack else [],
-                  "defense_enabled": False, "defense": "none", "training_metrics": training_metrics}
+                  "defense_enabled": config.defense != "none","defense": config.defense,"clip_norm": config.clip_norm, "training_metrics": training_metrics}
+        record["security_diagnostics"] = {
+            "clean_update_norms": clean_update_norms,
+            "submitted_update_norms": submitted_update_norms,
+            "effective_update_norms": effective_update_norms,
+            "aggregated_update_norm": aggregated_update_norm,
+        }
         records.append(record)
         if save_round is not None:
             save_round(RoundState(weights, deepcopy(records)))

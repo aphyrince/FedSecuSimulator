@@ -70,6 +70,7 @@ def run(
     out_dir: Path = Path('results/dlg_cnn_stage1'),
     checkpoint: Path | None = None,
     torch_threads: int = 1,
+    dlg_lr: float = 0.1,
 ) -> list[dict]:
     if not noise_stds or any(not math.isfinite(s) or s < 0 for s in noise_stds):
         raise ValueError('noise_stds는 0 이상의 유한한 숫자여야 합니다.')
@@ -83,9 +84,15 @@ def run(
     if checkpoint is None:
         model = create_model(seed=seed)
         model_source = 'newly_initialized_small_cnn_v1'
+        model_architecture = 'small_cnn_v1'
+        checkpoint_hash = None
     else:
-        model = build_model(load_model_checkpoint(checkpoint))
+        checkpoint_payload = load_model_checkpoint(checkpoint)
+        model = build_model(checkpoint_payload)
         model_source = str(checkpoint)
+        model_architecture = checkpoint_payload['architecture']
+        checkpoint_hash = checkpoint_payload['model_hash']
+
     model.eval()
 
     clean_grads = compute_shared_gradients(model, original, label)
@@ -106,6 +113,7 @@ def run(
             image_shape=(3, 32, 32),
             num_classes=10,
             steps=steps,
+            lr=dlg_lr,
             seed=seed + 1,
             image_min=-1.0,
             image_max=1.0,
@@ -123,8 +131,9 @@ def run(
             writer.writerows(reconstruction.history)
 
         summary = {
-            'model': 'small_cnn_v1',
+            'model': model_architecture,
             'model_source': model_source,
+            'checkpoint_hash': checkpoint_hash,
             'image_index': index,
             'seed': seed,
             'steps': steps,
@@ -136,6 +145,7 @@ def run(
             'gradient_match_loss_after': reconstruction.match_loss_after,
             'true_label_for_evaluation_only': label,
             'predicted_label': reconstruction.predicted_label,
+            'dlg_lr': dlg_lr,
         }
         summaries.append(summary)
         print(f"noise_std={std:g} | MSE={mse:.6f} | loss={reconstruction.match_loss_before:.5g} -> {reconstruction.match_loss_after:.5g}", flush=True)
@@ -173,6 +183,7 @@ def main() -> None:
     parser.add_argument('--checkpoint', type=Path)
     parser.add_argument('--out-dir', type=Path, default=Path('results/dlg_cnn_stage1'))
     parser.add_argument('--torch-threads', type=int, default=1)
+    parser.add_argument('--dlg-lr',type=float,default=0.1)
     args = parser.parse_args()
     run(
         batch_file=args.batch_file,
@@ -183,6 +194,7 @@ def main() -> None:
         out_dir=args.out_dir,
         checkpoint=args.checkpoint,
         torch_threads=args.torch_threads,
+        dlg_lr=args.dlg_lr,
     )
 
 
